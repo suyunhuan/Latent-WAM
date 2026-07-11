@@ -72,16 +72,16 @@ def test_build_structural_fixture_from_one_frame(tmp_path: Path) -> None:
 def test_public_cache_dataset(tmp_path: Path) -> None:
     sample_root = tmp_path / "log" / "sample"
     _dump_pickle(
-        sample_root / "latent_wam_features_v1.gz",
+        sample_root / "latent_wam_features_v2.gz",
         {
             "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
             "geometry": torch.zeros((4, 3, 9, 2048)),
             "ego_status": torch.zeros((4, 8)),
-            "schema_version": 1,
+            "schema_version": 2,
         },
     )
     _dump_pickle(
-        sample_root / "latent_wam_targets_v1.gz",
+        sample_root / "latent_wam_targets_v2.gz",
         {"trajectory": torch.zeros((8, 3))},
     )
 
@@ -91,3 +91,11 @@ def test_public_cache_dataset(tmp_path: Path) -> None:
     assert len(dataset) == 1
     assert features["images"].shape == (4, 3, 8, 12, 3)
     assert targets["trajectory"].shape == (8, 3)
+
+
+def test_public_v1_cache_is_not_discovered(tmp_path: Path) -> None:
+    sample_root = tmp_path / "log" / "sample"
+    _dump_pickle(sample_root / "latent_wam_features_v1.gz", {})
+    _dump_pickle(sample_root / "latent_wam_targets_v1.gz", {})
+
+    assert len(LatentWAMCacheDataset(tmp_path)) == 0

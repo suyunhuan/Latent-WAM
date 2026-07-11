@@ -62,7 +62,7 @@ class LatentWAMFeatureBuilder(AbstractFeatureBuilder):
         self.config = config
 
     def get_unique_name(self) -> str:
-        return "latent_wam_features_v1"
+        return "latent_wam_features_v2"
 
     def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
         if len(agent_input.cameras) <= CURRENT_FRAME_INDEX:
@@ -80,7 +80,7 @@ class LatentWAMTargetBuilder(AbstractTargetBuilder):
         self.config = config
 
     def get_unique_name(self) -> str:
-        return "latent_wam_targets_v1"
+        return "latent_wam_targets_v2"
 
     def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
         trajectory = scene.get_future_trajectory(num_trajectory_frames=self.config.trajectory.num_poses).poses

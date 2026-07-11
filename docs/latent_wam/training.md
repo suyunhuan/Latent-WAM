@@ -12,8 +12,9 @@ Losses are preserved from the final implementation:
 - cosine geometry alignment loss;
 - command cross-entropy plus velocity/acceleration MSE.
 
-Generate versioned caches first, then train with `build_target_encoder=true` and
-`use_cache_without_dataset=true`; commands are in the root README. The target
+Generate version 2 caches first, then train with `build_target_encoder=true` and
+`use_cache_without_dataset=true`; commands are in the root README. Version 1
+public caches are rejected because they omitted WorldMirror camera priors. The target
 DINO encoder is initialized from the online encoder when loading public
 safetensors and is updated with EMA momentum 0.999.
 

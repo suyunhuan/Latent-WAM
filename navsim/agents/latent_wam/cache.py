@@ -36,11 +36,11 @@ class LatentWAMFeatures:
     geometry: torch.Tensor
     ego_status: torch.Tensor
     time_offsets_s: Tuple[float, ...] = TIME_OFFSETS_S
-    schema_version: int = 1
+    schema_version: int = 2
 
     def validate(self) -> None:
         """Validate tensor ranks, time alignment, and finite values."""
-        if self.schema_version != 1:
+        if self.schema_version != 2:
             raise ValueError(f"unsupported cache schema version: {self.schema_version}")
         if self.time_offsets_s != TIME_OFFSETS_S:
             raise ValueError(f"cache time offsets must be {TIME_OFFSETS_S}")

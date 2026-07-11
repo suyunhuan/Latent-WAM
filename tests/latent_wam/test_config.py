@@ -2,7 +2,7 @@ import pytest
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from navsim.agents.latent_wam.config import LatentWAMConfig, TransformerConfig
+from navsim.agents.latent_wam.config import DataConfig, LatentWAMConfig, TransformerConfig
 
 
 def test_released_checkpoint_dimensions() -> None:
@@ -22,6 +22,11 @@ def test_released_checkpoint_dimensions() -> None:
 def test_transformer_dimension_validation() -> None:
     with pytest.raises(ValueError, match="divisible"):
         LatentWAMConfig(transformer=TransformerConfig(model_dim=255, num_heads=8))
+
+
+def test_public_v1_schema_is_rejected() -> None:
+    with pytest.raises(ValueError, match="schema version 2"):
+        DataConfig(schema_version=1)
 
 
 def test_hydra_config_builds_typed_config() -> None:

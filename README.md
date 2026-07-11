@@ -101,7 +101,9 @@ In the two-stage output, the final aggregate is the `score` in the
 
 ## Cache generation and training
 
-Geometry supervision is computed once and stored in the versioned cache:
+Camera-conditioned WorldMirror supervision is computed once and stored in the
+version 2 cache. Camera calibration is read from NAVSIM during extraction and
+is not stored in the cache:
 
 ```bash
 python navsim/planning/script/run_latent_wam_caching.py \

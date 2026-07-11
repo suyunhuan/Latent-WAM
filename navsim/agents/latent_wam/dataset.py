@@ -7,8 +7,8 @@ import torch
 
 from navsim.agents.latent_wam.cache import LatentWAMFeatures, load_legacy_features, load_trusted_pickle
 
-PUBLIC_FEATURE_NAME = "latent_wam_features_v1.gz"
-PUBLIC_TARGET_NAME = "latent_wam_targets_v1.gz"
+PUBLIC_FEATURE_NAME = "latent_wam_features_v2.gz"
+PUBLIC_TARGET_NAME = "latent_wam_targets_v2.gz"
 LEGACY_FEATURE_NAME = "transfuser_feature.gz"
 LEGACY_TARGET_NAME = "transfuser_target.gz"
 
@@ -19,7 +19,7 @@ def _public_features(data: Dict[str, object]) -> LatentWAMFeatures:
         geometry=torch.as_tensor(data["geometry"]),
         ego_status=torch.as_tensor(data["ego_status"], dtype=torch.float32),
         time_offsets_s=tuple(data.get("time_offsets_s", (-1.5, 0.0, 2.0, 4.0))),
-        schema_version=int(data.get("schema_version", 1)),
+        schema_version=int(data.get("schema_version", 2)),
     )
     features.validate()
     return features

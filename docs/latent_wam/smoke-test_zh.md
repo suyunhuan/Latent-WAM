@@ -3,7 +3,8 @@
 英文 [smoke-test.md](smoke-test.md) 是权威文档。本流程以最低计算成本验证发布链路，
 只使用一个 trainval 样本和一个 test scene，不能用 test 数据进行训练。
 
-验收范围包括：真实三视角四帧数据读取、WorldMirror geometry cache 生成与重载、
+验收范围包括：真实三视角四帧数据读取、带相机内外参条件的 WorldMirror
+geometry v2 cache 生成与重载、
 一次 forward/backward/optimizer/EMA、推理权重保存与严格重载，以及指定 test token
 的 metric cache 和单场景 PDM 评分。
 
@@ -14,7 +15,8 @@
 - test token：`8051c60f20705909`
 - test log：`2021.05.25.17.54.41_veh-35_04111_04288`
 
-真实缓存的 geometry shape 为 `[4, 3, 519, 2048]`，四项 loss、梯度和重载推理
+真实缓存的 geometry shape 为 `[4, 3, 519, 2048]`；与旧 geometry 的平均余弦
+相似度为 `0.9998027682304382`，通过 `0.999` 验收阈值。四项 loss、梯度和重载推理
 均为有限值，EMA target encoder 确实更新。指定场景评分有效，PDM score 为
 `0.9180014612343158`，全部乘法合规指标为 `1.0`。
 

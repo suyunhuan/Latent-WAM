@@ -72,6 +72,9 @@ python navsim/planning/script/run_pdm_score.py \
 
 ## 缓存与训练
 
+WorldMirror geometry 使用 NAVSIM 提供的相机内外参生成 v2 缓存；相机标定只在
+提取时使用，不会写入缓存。
+
 ```bash
 python navsim/planning/script/run_latent_wam_caching.py \
   agent=latent_wam_agent \

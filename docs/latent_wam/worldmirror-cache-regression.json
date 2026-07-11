@@ -1,0 +1,18 @@
+{
+  "legacy_frame_cache_sha256": "dde39ae0d6a38f4b43770315ee76bbdb86a81ed58e8d6cd3debcc7d0da7be328",
+  "legacy_geometry_sha256": "c90a9f33e76d4c3becceba838a2ffde06944025261f46a80f972fab28aaa6af6",
+  "calibration_log": "2021.05.12.19.36.12_veh-35_00005_00204",
+  "calibration_token": "0a678d2136b35b56",
+  "shape": [
+    1,
+    3,
+    519,
+    2048
+  ],
+  "minimum_cosine": 0.999,
+  "mean_cosine": 0.9998027682304382,
+  "mean_absolute_error": 0.02048799954354763,
+  "maximum_absolute_error": 3.3285140991210938,
+  "rmse": 0.03671614080667496,
+  "passed": true
+}

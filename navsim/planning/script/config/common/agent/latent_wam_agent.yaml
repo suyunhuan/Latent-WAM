@@ -44,7 +44,7 @@ config:
     time_offsets_s: [-1.5, 0.0, 2.0, 4.0]
     num_views: 3
     scene_tokens_per_view: 16
-    schema_version: 1
+    schema_version: 2
 
   runtime:
     _target_: navsim.agents.latent_wam.config.RuntimeConfig

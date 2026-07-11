@@ -8,15 +8,24 @@
     "images_shape": [4, 3, 1080, 1920, 3],
     "geometry_shape": [4, 3, 519, 2048],
     "ego_status_shape": [4, 8],
-    "trajectory_shape": [8, 3]
+    "trajectory_shape": [8, 3],
+    "schema_version": 2
+  },
+  "worldmirror_cache_regression": {
+    "minimum_cosine": 0.999,
+    "mean_cosine": 0.9998027682304382,
+    "mean_absolute_error": 0.02048799954354763,
+    "maximum_absolute_error": 3.3285140991210938,
+    "rmse": 0.03671614080667496,
+    "passed": true
   },
   "training_step": {
     "trajectory_loss": 0.11605432629585266,
     "wm_loss": 0.02001854218542576,
-    "geometry_loss": 0.08545643091201782,
+    "geometry_loss": 0.046016812324523926,
     "ego_status_loss": 0.060838282108306885,
-    "total_loss": 0.2823675870895386,
-    "gradient_max": 0.06927874684333801,
+    "total_loss": 0.24292796850204468,
+    "gradient_max": 0.07208873331546783,
     "ema_target_max_delta": 2.086162567138672e-07,
     "reloaded_trajectory_shape": [1, 8, 3]
   },

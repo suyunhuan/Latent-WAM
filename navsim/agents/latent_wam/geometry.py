@@ -2,12 +2,36 @@
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 import torch
 
 from navsim.agents.latent_wam.config import GeometryConfig, VisionConfig
+from worldmirror.src.models.utils.camera_utils import extrinsics_to_vector
+from worldmirror.src.models.utils.priors import normalize_poses
+
+
+@dataclass(frozen=True)
+class WorldMirrorInputs:
+    """Images and calibrated cameras for WorldMirror feature extraction."""
+
+    images: torch.Tensor
+    intrinsics: torch.Tensor
+    extrinsics: torch.Tensor
+
+    def validate(self) -> None:
+        """Validate the temporal/view dimensions and camera calibration."""
+        if self.images.ndim != 5 or self.images.shape[-1] != 3:
+            raise ValueError("images must have shape [T,V,H,W,C]")
+        expected_prefix = self.images.shape[:2]
+        if self.intrinsics.shape != (*expected_prefix, 3, 3):
+            raise ValueError("intrinsics must have shape [T,V,3,3] and align with images")
+        if self.extrinsics.shape != (*expected_prefix, 4, 4):
+            raise ValueError("extrinsics must have shape [T,V,4,4] and align with images")
+        if not torch.isfinite(self.intrinsics).all() or not torch.isfinite(self.extrinsics).all():
+            raise ValueError("camera calibration must contain finite values")
 
 
 class WorldMirrorFeatureExtractor:
@@ -130,7 +154,6 @@ class WorldMirrorFeatureExtractor:
         processor = AutoImageProcessor.from_pretrained(vision.model_id)
         processor.do_normalize = False
         processor.crop_size = {"height": vision.crop_height, "width": vision.crop_width}
-        processor.size = {"height": vision.crop_height, "width": vision.crop_width}
         return cls(
             model=model,
             processor=processor,
@@ -139,11 +162,11 @@ class WorldMirrorFeatureExtractor:
         )
 
     @torch.inference_mode()
-    def __call__(self, images: torch.Tensor) -> torch.Tensor:
-        """Extract WorldMirror tokens from channel-last RGB images.
+    def __call__(self, inputs: WorldMirrorInputs) -> torch.Tensor:
+        """Extract camera-conditioned WorldMirror tokens.
 
         Args:
-            images: Images shaped ``[T,V,H,W,C]`` or ``[V,H,W,C]``.
+            inputs: Images and calibrated cameras aligned as ``[T,V,...]``.
 
         Returns:
             Float32 CPU tokens shaped ``[T,V,519,2048]``.
@@ -151,24 +174,36 @@ class WorldMirrorFeatureExtractor:
         Raises:
             ValueError: If input or output shapes do not match the cache schema.
         """
-        if images.ndim == 4:
-            images = images[None]
-        if images.ndim != 5:
-            raise ValueError("images must have shape [T,V,H,W,C] or [V,H,W,C]")
+        inputs.validate()
+        images = inputs.images
         time_steps, views, height, width, channels = images.shape
         processed = self.processor(
             images=images.reshape(time_steps * views, height, width, channels),
             return_tensors="pt",
         ).pixel_values
         processed = processed.reshape(time_steps, views, channels, *processed.shape[-2:]).to(self.device)
-        token_list, patch_start_index = self.model(processed)
+        processed_height, processed_width = processed.shape[-2:]
+        intrinsics = inputs.intrinsics.to(self.device)
+        extrinsics = normalize_poses(inputs.extrinsics[..., :3, :].to(self.device))
+        poses = extrinsics_to_vector(extrinsics)
+        rays = torch.stack(
+            [
+                intrinsics[..., 0, 0] / processed_width,
+                intrinsics[..., 1, 1] / processed_height,
+                intrinsics[..., 0, 2] / processed_width,
+                intrinsics[..., 1, 2] / processed_height,
+            ],
+            dim=-1,
+        )
+        priors = (None, rays, poses)
+        use_bfloat16 = self.device.type == "cuda"
+        with torch.amp.autocast(self.device.type, enabled=use_bfloat16, dtype=torch.bfloat16):
+            token_list, patch_start_index = self.model(processed, priors, cond_flags=[1, 0, 1])
         tokens = token_list[-1]
         if tokens.shape[-1] != 2048:
             raise ValueError(f"expected 2048-D WorldMirror tokens, got {tokens.shape[-1]}")
         if patch_start_index != self.expected_patch_start_index:
-            raise ValueError(
-                f"expected patch start index {self.expected_patch_start_index}, got {patch_start_index}"
-            )
+            raise ValueError(f"expected patch start index {self.expected_patch_start_index}, got {patch_start_index}")
         if patch_start_index >= tokens.shape[-2]:
             raise ValueError("WorldMirror patch start index is outside the token sequence")
         return tokens.detach().float().cpu()

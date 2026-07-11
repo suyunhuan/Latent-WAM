@@ -7,8 +7,8 @@ train on test data.
 ## Acceptance path
 
 1. Load one real trainval scene with four temporal frames and three cameras.
-2. Extract WorldMirror visual-geometry tokens and round-trip the versioned
-   cache through `LatentWAMCacheDataset`.
+2. Extract camera-conditioned WorldMirror visual-geometry tokens and round-trip
+   the version 2 cache through `LatentWAMCacheDataset`.
 3. Run one forward/backward/optimizer step, verify all losses and gradients,
    update the target DINO encoder with EMA, save inference weights, and strictly
    reload them.
@@ -30,7 +30,9 @@ The July 11, 2026 release smoke used:
 
 Observed cache tensors were images `[4, 3, 1080, 1920, 3]`, geometry
 `[4, 3, 519, 2048]`, ego status `[4, 8]`, and trajectory target `[8, 3]`.
-The four training losses were finite, EMA changed the target encoder, and the
+The legacy WorldMirror regression reached mean cosine `0.9998027682304382`
+against the supplied reference geometry (minimum `0.999`). The four training
+losses were finite, EMA changed the target encoder, and the
 saved weights strictly reloaded. The single-scene evaluation was valid and
 produced PDM score `0.9180014612343158`; all multiplicative compliance metrics
 were `1.0`.
@@ -41,6 +43,9 @@ even when the process exits successfully.
 
 The machine-readable result is committed as
 [`smoke-result.json`](smoke-result.json).
+
+The WorldMirror comparison details and reference file hashes are in
+[`worldmirror-cache-regression.json`](worldmirror-cache-regression.json).
 
 ## Reproduction commands
 
@@ -77,6 +82,21 @@ python scripts/smoke_train_latent_wam.py \
   --checkpoint "$LATENT_WAM_WEIGHTS" \
   --vision-model "$DINOV2_PATH" \
   --output "$NAVSIM_EXP_ROOT/train_step_report.json"
+```
+
+Release maintainers with the trusted legacy frame can reproduce the
+WorldMirror regression separately:
+
+```bash
+python scripts/validate_worldmirror_cache.py \
+  --legacy-frame-cache /path/to/frame.gz \
+  --legacy-geometry /path/to/geometry_feature.npy \
+  --data-root "$DATA_ROOT" \
+  --calibration-log 2021.05.12.19.36.12_veh-35_00005_00204 \
+  --calibration-token 0a678d2136b35b56 \
+  --worldmirror-model "$WORLD_MIRROR_PATH" \
+  --vision-model "$DINOV2_PATH" \
+  --output worldmirror-cache-regression.json
 ```
 
 Build and score the single test scene. Local `/tmp` storage avoids sending the
