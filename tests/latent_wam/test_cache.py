@@ -10,9 +10,12 @@ from navsim.agents.latent_wam.cache import (
     LEGACY_FRAME_KEYS,
     LEGACY_STATUS_KEYS,
     build_structural_fixture,
+    is_valid_public_cache,
     load_legacy_features,
+    publish_public_cache,
 )
 from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
+from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
 
 
 def _dump_pickle(path: Path, value: object) -> None:
@@ -116,3 +119,23 @@ def test_public_v2_cache_requires_schema_version(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="schema_version"):
         LatentWAMCacheDataset(tmp_path)[0]
+
+
+def test_public_cache_is_atomically_published_and_validated(tmp_path: Path) -> None:
+    features = {
+        "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
+        "geometry": torch.zeros((4, 3, 9, 2048)),
+        "ego_status": torch.zeros((4, 8)),
+        "schema_version": 2,
+    }
+    targets = {"trajectory": torch.zeros((8, 3))}
+
+    publish_public_cache(tmp_path, features, targets, rank=3, expected_num_poses=8)
+
+    feature_path = tmp_path / PUBLIC_FEATURE_NAME
+    target_path = tmp_path / PUBLIC_TARGET_NAME
+    assert is_valid_public_cache(feature_path, target_path, expected_num_poses=8)
+    assert not list(tmp_path.glob("*.tmp"))
+
+    target_path.write_bytes(b"broken")
+    assert not is_valid_public_cache(feature_path, target_path, expected_num_poses=8)

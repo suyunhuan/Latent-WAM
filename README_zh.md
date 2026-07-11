@@ -82,6 +82,19 @@ python navsim/planning/script/run_latent_wam_caching.py \
   cache_path=$NAVSIM_EXP_ROOT/latent_wam_cache
 ```
 
+同一 Python 入口支持多机多卡。建议先做不加载 WorldMirror 的分布式检查：
+
+```bash
+NNODES=2 NPROC_PER_NODE=8 NODE_RANK=$NODE_RANK \
+MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT \
+bash scripts/run_dataset_caching_multi_node.sh distributed_dry_run=true
+```
+
+检查通过后去掉 `distributed_dry_run=true` 即可生成缓存。每个 rank 获得不重叠的
+token 分片；默认跳过有效 v2 缓存，`force_cache_computation=true` 可强制重算。
+最终状态保存在 `$CACHE_PATH/metadata/cache_manifest.json`。
+同一时间只允许一个 `torchrun` 任务写入同一缓存根目录。
+
 ```bash
 python navsim/planning/script/run_training.py \
   agent=latent_wam_agent \

@@ -19,6 +19,15 @@
     "rmse": 0.03671614080667496,
     "passed": true
   },
+  "distributed_cache": {
+    "local_coordination_backend": "gloo",
+    "local_coordination_world_size": 2,
+    "dry_run_passed": true,
+    "single_device_forced_cache_passed": true,
+    "atomic_publish_passed": true,
+    "manifest_status": "complete",
+    "real_multi_gpu_or_multi_node_extraction_tested": false
+  },
   "training_step": {
     "trajectory_loss": 0.11605432629585266,
     "wm_loss": 0.02001854218542576,

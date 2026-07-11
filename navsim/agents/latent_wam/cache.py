@@ -1,6 +1,7 @@
 """Versioned feature schema and legacy cache adapters for Latent WAM."""
 
 import gzip
+import os
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any, Dict, Mapping, Tuple
 import numpy as np
 import torch
 
-from navsim.agents.latent_wam.schema import CACHE_SCHEMA_VERSION
+from navsim.agents.latent_wam.schema import CACHE_SCHEMA_VERSION, PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
 
 LEGACY_FRAME_KEYS: Tuple[str, ...] = (
     "camera_feature_prev_3",
@@ -70,6 +71,117 @@ def load_trusted_pickle(path: Path) -> Any:
     """
     with gzip.open(path, "rb") as file:
         return pickle.load(file)
+
+
+def public_features_from_mapping(data: Mapping[str, Any]) -> LatentWAMFeatures:
+    """Load and validate public features from their serialized mapping.
+
+    Args:
+        data: Deserialized public feature payload.
+
+    Returns:
+        Validated Latent WAM feature tensors.
+
+    Raises:
+        ValueError: If the schema or tensor shapes are invalid.
+    """
+    if "schema_version" not in data:
+        raise ValueError("public cache is missing schema_version")
+    features = LatentWAMFeatures(
+        images=torch.as_tensor(data["images"]),
+        geometry=torch.as_tensor(data["geometry"]),
+        ego_status=torch.as_tensor(data["ego_status"], dtype=torch.float32),
+        time_offsets_s=tuple(data.get("time_offsets_s", TIME_OFFSETS_S)),
+        schema_version=int(data["schema_version"]),
+    )
+    features.validate()
+    return features
+
+
+def public_trajectory_from_mapping(data: Mapping[str, Any], expected_num_poses: int) -> torch.Tensor:
+    """Load and validate the public trajectory target.
+
+    Args:
+        data: Deserialized public target payload.
+        expected_num_poses: Required trajectory length.
+
+    Returns:
+        Float32 trajectory tensor shaped ``[expected_num_poses, 3]``.
+
+    Raises:
+        ValueError: If the target is missing, malformed, or non-finite.
+    """
+    if "trajectory" not in data:
+        raise ValueError("public target cache is missing trajectory")
+    trajectory = torch.as_tensor(data["trajectory"], dtype=torch.float32)
+    if trajectory.shape != (expected_num_poses, 3):
+        raise ValueError(f"trajectory must have shape [{expected_num_poses},3]")
+    if not torch.isfinite(trajectory).all():
+        raise ValueError("trajectory must contain finite values")
+    return trajectory
+
+
+def is_valid_public_cache(feature_path: Path, target_path: Path, expected_num_poses: int) -> bool:
+    """Check whether a public feature/target pair passes full validation.
+
+    Args:
+        feature_path: Gzip-pickle feature file.
+        target_path: Gzip-pickle target file.
+        expected_num_poses: Required trajectory length.
+
+    Returns:
+        ``True`` only when both files can be fully loaded and validated.
+    """
+    if not feature_path.is_file() or not target_path.is_file():
+        return False
+    try:
+        public_features_from_mapping(load_trusted_pickle(feature_path))
+        public_trajectory_from_mapping(load_trusted_pickle(target_path), expected_num_poses)
+    except Exception:
+        return False
+    return True
+
+
+def _dump_pickle(path: Path, data: Mapping[str, Any]) -> None:
+    with gzip.open(path, "wb", compresslevel=1) as file:
+        pickle.dump(dict(data), file)
+
+
+def publish_public_cache(
+    sample_root: Path,
+    features: Mapping[str, Any],
+    targets: Mapping[str, Any],
+    rank: int,
+    expected_num_poses: int,
+) -> None:
+    """Validate and atomically publish one public v2 feature/target pair.
+
+    Args:
+        sample_root: Token-specific cache directory.
+        features: Public feature payload to serialize.
+        targets: Public target payload to serialize.
+        rank: Cache worker rank used to isolate temporary files.
+        expected_num_poses: Required trajectory length for reload validation.
+
+    Raises:
+        ValueError: If serialized temporary files fail full validation.
+    """
+    sample_root.mkdir(parents=True, exist_ok=True)
+    suffix = f".rank_{rank}.pid_{os.getpid()}.tmp"
+    feature_path = sample_root / PUBLIC_FEATURE_NAME
+    target_path = sample_root / PUBLIC_TARGET_NAME
+    temporary_feature = feature_path.with_name(feature_path.name + suffix)
+    temporary_target = target_path.with_name(target_path.name + suffix)
+    try:
+        _dump_pickle(temporary_feature, features)
+        _dump_pickle(temporary_target, targets)
+        if not is_valid_public_cache(temporary_feature, temporary_target, expected_num_poses):
+            raise ValueError("temporary public cache failed validation")
+        os.replace(temporary_feature, feature_path)
+        os.replace(temporary_target, target_path)
+    finally:
+        temporary_feature.unlink(missing_ok=True)
+        temporary_target.unlink(missing_ok=True)
 
 
 def _load_legacy_frame(cache_root: Path, token: str) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -5,25 +5,16 @@ from typing import Dict, Iterable, Optional, Tuple
 
 import torch
 
-from navsim.agents.latent_wam.cache import LatentWAMFeatures, load_legacy_features, load_trusted_pickle
+from navsim.agents.latent_wam.cache import (
+    load_legacy_features,
+    load_trusted_pickle,
+    public_features_from_mapping,
+    public_trajectory_from_mapping,
+)
 from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
 
 LEGACY_FEATURE_NAME = "transfuser_feature.gz"
 LEGACY_TARGET_NAME = "transfuser_target.gz"
-
-
-def _public_features(data: Dict[str, object]) -> LatentWAMFeatures:
-    if "schema_version" not in data:
-        raise ValueError("public cache is missing schema_version")
-    features = LatentWAMFeatures(
-        images=torch.as_tensor(data["images"]),
-        geometry=torch.as_tensor(data["geometry"]),
-        ego_status=torch.as_tensor(data["ego_status"], dtype=torch.float32),
-        time_offsets_s=tuple(data.get("time_offsets_s", (-1.5, 0.0, 2.0, 4.0))),
-        schema_version=int(data["schema_version"]),
-    )
-    features.validate()
-    return features
 
 
 class LatentWAMCacheDataset(torch.utils.data.Dataset):
@@ -59,10 +50,9 @@ class LatentWAMCacheDataset(torch.utils.data.Dataset):
         if feature_path.name == LEGACY_FEATURE_NAME:
             features = load_legacy_features(feature_path, self.cache_path / "feature_cache")
         else:
-            features = _public_features(load_trusted_pickle(feature_path))
+            features = public_features_from_mapping(load_trusted_pickle(feature_path))
         target_data = load_trusted_pickle(target_path)
-        if "trajectory" not in target_data:
-            raise ValueError(f"target cache has no trajectory: {target_path}")
+        trajectory = public_trajectory_from_mapping(target_data, expected_num_poses=8)
         return (
             {
                 "images": features.images,
@@ -70,5 +60,5 @@ class LatentWAMCacheDataset(torch.utils.data.Dataset):
                 "ego_status": features.ego_status,
                 "token": feature_path.parent.name,
             },
-            {"trajectory": torch.as_tensor(target_data["trajectory"], dtype=torch.float32)},
+            {"trajectory": trajectory},
         )

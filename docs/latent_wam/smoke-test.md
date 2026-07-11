@@ -47,6 +47,11 @@ The machine-readable result is committed as
 The WorldMirror comparison details and reference file hashes are in
 [`worldmirror-cache-regression.json`](worldmirror-cache-regression.json).
 
+Distributed coordination was checked with two local Gloo processes. The test
+covered process-group lifecycle, token agreement, balanced sharding including
+an empty rank, object gathering, and manifest generation. This machine has one
+PPU, so real multi-GPU or multi-node WorldMirror extraction was not executed.
+
 ## Reproduction commands
 
 The commands below are the token-scoped recipe used for the verified fixture.

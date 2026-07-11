@@ -24,6 +24,10 @@ geometry v2 cache 生成与重载、
 迁移结果数值一致。单场景 metric cache 建议写入 `/tmp`，最终只保留较小的 CSV/JSON
 报告。
 
+分布式协调已使用本机两个 Gloo 进程验证，覆盖 process group 生命周期、token
+一致性、均衡分片（包括空 rank）、汇总和 manifest。当前机器只有一张 PPU，
+因此没有执行真实的双 GPU 或双节点 WorldMirror 提取。
+
 阿里云 PPU 环境可通过 `bash scripts/setup_ppu_smoke_env.sh` 重建项目 overlay；
 它继承宿主机与硬件匹配的 torch/torchvision，其余 smoke 依赖固定在
 `requirements-ppu-smoke.txt`。

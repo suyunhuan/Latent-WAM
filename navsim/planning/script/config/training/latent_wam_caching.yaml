@@ -6,11 +6,13 @@ defaults:
   - override train_test_split: trainval
 
 cache_path: ${oc.env:NAVSIM_EXP_ROOT}/latent_wam_cache
+force_cache_computation: false
+distributed_dry_run: false
 
 hydra:
   run:
-    dir: ${cache_path}/metadata
-  output_subdir: ${cache_path}/metadata/code/hydra
+    dir: ${cache_path}/metadata/rank_${oc.env:RANK,0}
+  output_subdir: ${cache_path}/metadata/rank_${oc.env:RANK,0}/code/hydra
   searchpath:
     - pkg://navsim.planning.script.config.common
   job:

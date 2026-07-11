@@ -112,6 +112,22 @@ python navsim/planning/script/run_latent_wam_caching.py \
   cache_path=$NAVSIM_EXP_ROOT/latent_wam_cache
 ```
 
+The same entrypoint supports distributed cache generation. Run a coordination
+check without loading WorldMirror first:
+
+```bash
+NNODES=2 NPROC_PER_NODE=8 NODE_RANK=$NODE_RANK \
+MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT \
+bash scripts/run_dataset_caching_multi_node.sh distributed_dry_run=true
+```
+
+Then remove the dry-run override to generate caches. Each rank receives a
+deterministic non-overlapping token shard and loads one WorldMirror instance
+only when its shard contains work. Valid v2 samples are skipped by default;
+use `force_cache_computation=true` to rebuild them. The final status is stored
+in `$CACHE_PATH/metadata/cache_manifest.json`. Run only one `torchrun` job
+against a cache root at a time.
+
 ```bash
 python navsim/planning/script/run_training.py \
   agent=latent_wam_agent \
