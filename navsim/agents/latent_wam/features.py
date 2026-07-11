@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from navsim.agents.latent_wam.config import LatentWAMConfig
+from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_KEY, PUBLIC_TARGET_KEY
 from navsim.common.dataclasses import AgentInput, Scene, SensorConfig
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 
@@ -62,7 +63,7 @@ class LatentWAMFeatureBuilder(AbstractFeatureBuilder):
         self.config = config
 
     def get_unique_name(self) -> str:
-        return "latent_wam_features_v2"
+        return PUBLIC_FEATURE_KEY
 
     def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
         if len(agent_input.cameras) <= CURRENT_FRAME_INDEX:
@@ -80,7 +81,7 @@ class LatentWAMTargetBuilder(AbstractTargetBuilder):
         self.config = config
 
     def get_unique_name(self) -> str:
-        return "latent_wam_targets_v2"
+        return PUBLIC_TARGET_KEY
 
     def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
         trajectory = scene.get_future_trajectory(num_trajectory_frames=self.config.trajectory.num_poses).poses

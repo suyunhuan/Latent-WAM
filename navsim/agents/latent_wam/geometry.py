@@ -9,8 +9,31 @@ from typing import Any, Optional
 import torch
 
 from navsim.agents.latent_wam.config import GeometryConfig, VisionConfig
-from worldmirror.src.models.utils.camera_utils import extrinsics_to_vector
-from worldmirror.src.models.utils.priors import normalize_poses
+
+WORLDMIRROR_CONDITION_FLAGS = (1, 0, 1)
+
+
+def _build_camera_priors(
+    intrinsics: torch.Tensor,
+    extrinsics: torch.Tensor,
+    image_height: int,
+    image_width: int,
+) -> tuple[None, torch.Tensor, torch.Tensor]:
+    from worldmirror.src.models.utils.camera_utils import extrinsics_to_vector
+    from worldmirror.src.models.utils.priors import normalize_poses
+
+    normalized_extrinsics = normalize_poses(extrinsics[..., :3, :])
+    poses = extrinsics_to_vector(normalized_extrinsics)
+    rays = torch.stack(
+        [
+            intrinsics[..., 0, 0] / image_width,
+            intrinsics[..., 1, 1] / image_height,
+            intrinsics[..., 0, 2] / image_width,
+            intrinsics[..., 1, 2] / image_height,
+        ],
+        dim=-1,
+    )
+    return None, rays, poses
 
 
 @dataclass(frozen=True)
@@ -152,6 +175,12 @@ class WorldMirrorFeatureExtractor:
         model_directory = cls._resolve_model_directory(geometry.model_id)
         model = cls._load_visual_encoder(model_directory, target_device)
         processor = AutoImageProcessor.from_pretrained(vision.model_id)
+        processor.do_resize = True
+        processor.size = {"shortest_edge": 256}
+        processor.resample = 3
+        processor.do_center_crop = True
+        processor.do_rescale = True
+        processor.rescale_factor = 1 / 255
         processor.do_normalize = False
         processor.crop_size = {"height": vision.crop_height, "width": vision.crop_width}
         return cls(
@@ -184,21 +213,19 @@ class WorldMirrorFeatureExtractor:
         processed = processed.reshape(time_steps, views, channels, *processed.shape[-2:]).to(self.device)
         processed_height, processed_width = processed.shape[-2:]
         intrinsics = inputs.intrinsics.to(self.device)
-        extrinsics = normalize_poses(inputs.extrinsics[..., :3, :].to(self.device))
-        poses = extrinsics_to_vector(extrinsics)
-        rays = torch.stack(
-            [
-                intrinsics[..., 0, 0] / processed_width,
-                intrinsics[..., 1, 1] / processed_height,
-                intrinsics[..., 0, 2] / processed_width,
-                intrinsics[..., 1, 2] / processed_height,
-            ],
-            dim=-1,
+        priors = _build_camera_priors(
+            intrinsics=intrinsics,
+            extrinsics=inputs.extrinsics.to(self.device),
+            image_height=processed_height,
+            image_width=processed_width,
         )
-        priors = (None, rays, poses)
         use_bfloat16 = self.device.type == "cuda"
         with torch.amp.autocast(self.device.type, enabled=use_bfloat16, dtype=torch.bfloat16):
-            token_list, patch_start_index = self.model(processed, priors, cond_flags=[1, 0, 1])
+            token_list, patch_start_index = self.model(
+                processed,
+                priors,
+                cond_flags=list(WORLDMIRROR_CONDITION_FLAGS),
+            )
         tokens = token_list[-1]
         if tokens.shape[-1] != 2048:
             raise ValueError(f"expected 2048-D WorldMirror tokens, got {tokens.shape[-1]}")

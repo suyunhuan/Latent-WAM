@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from navsim.agents.latent_wam.features import CAMERA_NAMES, TRAINING_FRAME_INDICES, build_camera_sensor_config
 from navsim.agents.latent_wam.geometry import WorldMirrorFeatureExtractor, WorldMirrorInputs
+from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
 from navsim.common.dataclasses import Scene, SceneFilter
 from navsim.common.dataloader import SceneLoader
 from navsim.planning.training.dataset import dump_feature_target_to_pickle
@@ -29,7 +30,17 @@ def adjust_camera_intrinsics(
     resize_size: tuple[int, int] = LEGACY_RESIZE_SIZE,
     crop_size: tuple[int, int] = LEGACY_CROP_SIZE,
 ) -> np.ndarray:
-    """Adjust camera intrinsics for the legacy resize and center crop."""
+    """Adjust camera intrinsics for the legacy resize and center crop.
+
+    Args:
+        intrinsics: Original camera matrix shaped ``[3,3]``.
+        original_size: Original image size as ``(width, height)``.
+        resize_size: Intermediate image size as ``(width, height)``.
+        crop_size: Final center-crop size as ``(width, height)``.
+
+    Returns:
+        The adjusted float32 camera matrix shaped ``[3,3]``.
+    """
     original_width, original_height = original_size
     resize_width, resize_height = resize_size
     crop_width, crop_height = crop_size
@@ -46,7 +57,17 @@ def adjust_camera_intrinsics(
 
 
 def build_world_mirror_inputs(scene: Scene) -> WorldMirrorInputs:
-    """Build calibrated WorldMirror inputs from the released NAVSIM frames."""
+    """Build calibrated WorldMirror inputs from the released NAVSIM frames.
+
+    Args:
+        scene: NAVSIM scene containing the four selected frames and cameras.
+
+    Returns:
+        Time/view-aligned images, intrinsics, and world-to-camera extrinsics.
+
+    Raises:
+        ValueError: If an image or camera calibration field is missing or invalid.
+    """
     images = []
     intrinsics = []
     extrinsics = []
@@ -134,8 +155,8 @@ def main(cfg: DictConfig) -> None:
         }
         sample_root = cache_root / scene.scene_metadata.log_name / scene.scene_metadata.initial_token
         sample_root.mkdir(parents=True, exist_ok=True)
-        dump_feature_target_to_pickle(sample_root / "latent_wam_features_v2.gz", features)
-        dump_feature_target_to_pickle(sample_root / "latent_wam_targets_v2.gz", target)
+        dump_feature_target_to_pickle(sample_root / PUBLIC_FEATURE_NAME, features)
+        dump_feature_target_to_pickle(sample_root / PUBLIC_TARGET_NAME, target)
     logger.info("Cached %d Latent WAM samples", len(scene_loader))
 
 

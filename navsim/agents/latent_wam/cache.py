@@ -9,6 +9,8 @@ from typing import Any, Dict, Mapping, Tuple
 import numpy as np
 import torch
 
+from navsim.agents.latent_wam.schema import CACHE_SCHEMA_VERSION
+
 LEGACY_FRAME_KEYS: Tuple[str, ...] = (
     "camera_feature_prev_3",
     "camera_feature",
@@ -36,11 +38,11 @@ class LatentWAMFeatures:
     geometry: torch.Tensor
     ego_status: torch.Tensor
     time_offsets_s: Tuple[float, ...] = TIME_OFFSETS_S
-    schema_version: int = 2
+    schema_version: int = CACHE_SCHEMA_VERSION
 
     def validate(self) -> None:
         """Validate tensor ranks, time alignment, and finite values."""
-        if self.schema_version != 2:
+        if self.schema_version != CACHE_SCHEMA_VERSION:
             raise ValueError(f"unsupported cache schema version: {self.schema_version}")
         if self.time_offsets_s != TIME_OFFSETS_S:
             raise ValueError(f"cache time offsets must be {TIME_OFFSETS_S}")

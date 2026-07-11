@@ -3,6 +3,7 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from navsim.agents.latent_wam.cache import (
@@ -99,3 +100,19 @@ def test_public_v1_cache_is_not_discovered(tmp_path: Path) -> None:
     _dump_pickle(sample_root / "latent_wam_targets_v1.gz", {})
 
     assert len(LatentWAMCacheDataset(tmp_path)) == 0
+
+
+def test_public_v2_cache_requires_schema_version(tmp_path: Path) -> None:
+    sample_root = tmp_path / "log" / "sample"
+    _dump_pickle(
+        sample_root / "latent_wam_features_v2.gz",
+        {
+            "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
+            "geometry": torch.zeros((4, 3, 9, 2048)),
+            "ego_status": torch.zeros((4, 8)),
+        },
+    )
+    _dump_pickle(sample_root / "latent_wam_targets_v2.gz", {"trajectory": torch.zeros((8, 3))})
+
+    with pytest.raises(ValueError, match="schema_version"):
+        LatentWAMCacheDataset(tmp_path)[0]
