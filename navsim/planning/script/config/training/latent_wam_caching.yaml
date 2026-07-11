@@ -1,0 +1,17 @@
+defaults:
+  - default_common
+  - default_dataset_paths
+  - agent: latent_wam_agent
+  - _self_
+  - override train_test_split: trainval
+
+cache_path: ${oc.env:NAVSIM_EXP_ROOT}/latent_wam_cache
+
+hydra:
+  run:
+    dir: ${cache_path}/metadata
+  output_subdir: ${cache_path}/metadata/code/hydra
+  searchpath:
+    - pkg://navsim.planning.script.config.common
+  job:
+    chdir: false

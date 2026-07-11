@@ -1,9 +1,17 @@
-name: navsim
+name: latent-wam
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
+  - nodefaults
 dependencies:
   - python=3.10
   - pip=23.3.1
   - nb_conda_kernels
+  - pytorch=2.4.1
+  - torchvision=0.19.1
+  - pytorch-cuda=12.4
   - pip:
     - -r requirements.txt
+    - -r requirements-latent-wam.txt
+    - -r requirements-worldmirror-inference.txt

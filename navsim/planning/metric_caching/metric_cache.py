@@ -8,7 +8,6 @@ from typing import List, Optional
 
 from nuplan.common.actor_state.ego_state import EgoState
 from nuplan.common.actor_state.state_representation import TimePoint
-from nuplan.common.utils.io_utils import save_buffer
 from nuplan.planning.simulation.observation.observation_type import DetectionsTracks
 from nuplan.planning.simulation.trajectory.interpolated_trajectory import InterpolatedTrajectory
 
@@ -54,4 +53,8 @@ class MetricCache:
         """Dump metric cache to pickle with lzma compression."""
         # TODO: check if file_path must really be pickled
         pickle_object = pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL)
-        save_buffer(self.file_path, lzma.compress(pickle_object, preset=0))
+        compressed = lzma.compress(pickle_object, preset=0)
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.file_path.with_suffix(f"{self.file_path.suffix}.tmp")
+        temporary_path.write_bytes(compressed)
+        temporary_path.replace(self.file_path)

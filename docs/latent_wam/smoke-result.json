@@ -1,0 +1,31 @@
+{
+  "date": "2026-07-11",
+  "data_root": "/mnt/oss_data/navsim/Egonav/openscene-v1.1",
+  "checkpoint_sha256": "b25a52e3d96b7d92faf99e6d9a61eccabb07137ca93c10d83bc1422ef0c17bb1",
+  "trainval": {
+    "log": "2021.05.12.19.36.12_veh-35_00005_00204",
+    "token": "a6a284584b19599f",
+    "images_shape": [4, 3, 1080, 1920, 3],
+    "geometry_shape": [4, 3, 519, 2048],
+    "ego_status_shape": [4, 8],
+    "trajectory_shape": [8, 3]
+  },
+  "training_step": {
+    "trajectory_loss": 0.11605432629585266,
+    "wm_loss": 0.02001854218542576,
+    "geometry_loss": 0.08545643091201782,
+    "ego_status_loss": 0.060838282108306885,
+    "total_loss": 0.2823675870895386,
+    "gradient_max": 0.06927874684333801,
+    "ema_target_max_delta": 2.086162567138672e-07,
+    "reloaded_trajectory_shape": [1, 8, 3]
+  },
+  "pdm": {
+    "log": "2021.05.25.17.54.41_veh-35_04111_04288",
+    "token": "8051c60f20705909",
+    "valid": true,
+    "score": 0.9180014612343158,
+    "ego_progress": 0.7704040914560842,
+    "multiplicative_metrics_all_one": true
+  }
+}

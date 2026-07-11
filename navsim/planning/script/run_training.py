@@ -2,20 +2,20 @@ import logging
 from pathlib import Path
 from typing import Tuple
 
-import os
-import torch
 import hydra
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
-import torch.distributed as dist
 
 from navsim.agents.abstract_agent import AbstractAgent
+from navsim.agents.latent_wam.agent import LatentWAMAgent
+from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
+from navsim.agents.latent_wam.lightning_module import LatentWAMLightningModule
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
 from navsim.planning.training.agent_lightning_module import AgentLightningModule
-from navsim.planning.training.dataset import CacheOnlyDataset, Dataset, CacheOnlyDatasetParallel
+from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
 
 logger = logging.getLogger(__name__)
 
@@ -86,17 +86,6 @@ def main(cfg: DictConfig) -> None:
     Main entrypoint for training an agent.
     :param cfg: omegaconf dictionary
     """
-    local_rank = int(os.getenv('LOCAL_RANK', 0))
-    world_size = int(os.getenv('WORLD_SIZE', 1))
-    rank = int(os.getenv('RANK', 0))
-
-    dist.init_process_group(
-        backend='nccl',
-        world_size=world_size,
-        rank=rank,
-    )
-    torch.cuda.set_device(local_rank)
-
     pl.seed_everything(cfg.seed, workers=True)
     logger.info(f"Global Seed set to {cfg.seed}")
 
@@ -104,12 +93,14 @@ def main(cfg: DictConfig) -> None:
 
     logger.info("Building Agent")
     agent: AbstractAgent = instantiate(cfg.agent)
+    if isinstance(agent, LatentWAMAgent) and not cfg.use_cache_without_dataset:
+        raise ValueError("Latent WAM training requires caches; set use_cache_without_dataset=true")
 
     logger.info("Building Lightning Module")
-    lightning_module = AgentLightningModule(
-        cfg=cfg.agent.config,
-        agent=agent,
-    )
+    if isinstance(agent, LatentWAMAgent):
+        lightning_module = LatentWAMLightningModule(agent=agent)
+    else:
+        lightning_module = AgentLightningModule(agent=agent)
 
     if cfg.use_cache_without_dataset:
         logger.info("Using cached data without building SceneLoader")
@@ -119,18 +110,22 @@ def main(cfg: DictConfig) -> None:
         assert (
             cfg.cache_path is not None
         ), "cache_path must be provided when using cached data without building SceneLoader"
-        train_data = CacheOnlyDatasetParallel(
-            cache_path=cfg.cache_path,
-            feature_builders=agent.get_feature_builders(),
-            target_builders=agent.get_target_builders(),
-            log_names=cfg.train_logs,
-        )
-        val_data = CacheOnlyDatasetParallel(
-            cache_path=cfg.cache_path,
-            feature_builders=agent.get_feature_builders(),
-            target_builders=agent.get_target_builders(),
-            log_names=cfg.val_logs,
-        )
+        if isinstance(agent, LatentWAMAgent):
+            train_data = LatentWAMCacheDataset(cfg.cache_path, log_names=cfg.train_logs)
+            val_data = LatentWAMCacheDataset(cfg.cache_path, log_names=cfg.val_logs)
+        else:
+            train_data = CacheOnlyDataset(
+                cache_path=cfg.cache_path,
+                feature_builders=agent.get_feature_builders(),
+                target_builders=agent.get_target_builders(),
+                log_names=cfg.train_logs,
+            )
+            val_data = CacheOnlyDataset(
+                cache_path=cfg.cache_path,
+                feature_builders=agent.get_feature_builders(),
+                target_builders=agent.get_target_builders(),
+                log_names=cfg.val_logs,
+            )
     else:
         logger.info("Building SceneLoader")
         train_data, val_data = build_datasets(cfg, agent)
@@ -149,7 +144,7 @@ def main(cfg: DictConfig) -> None:
         model=lightning_module,
         train_dataloaders=train_dataloader,
         val_dataloaders=val_dataloader,
-        ckpt_path=cfg.get('resume_ckpt_path', None)
+        ckpt_path=cfg.get("resume_ckpt_path", None),
     )
 
 

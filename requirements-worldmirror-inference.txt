@@ -1,0 +1,4 @@
+# WorldMirror visual-geometry extraction used by Latent WAM caches.
+huggingface-hub>=0.22
+einops>=0.7
+jaxtyping

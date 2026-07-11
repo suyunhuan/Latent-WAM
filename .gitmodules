@@ -1,0 +1,3 @@
+[submodule "worldmirror"]
+	path = worldmirror
+	url = https://github.com/Tencent-Hunyuan/HunyuanWorld-Mirror.git

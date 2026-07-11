@@ -38,7 +38,6 @@ def initialize_ray(
             ray will launch in distributed mode
     :return: created WorkerResources.
     """
-
     # Env variables which are set through SLURM script
     env_var_master_node_ip = "ip_head"
     env_var_master_node_password = "redis_password"
@@ -77,7 +76,6 @@ def initialize_ray(
         logger.info("Starting ray local!")
         ray.init(
             num_cpus=number_of_cpus_per_node,
-            address="local",
             dashboard_host="0.0.0.0",
             local_mode=local_mode,
             log_to_driver=log_to_driver,

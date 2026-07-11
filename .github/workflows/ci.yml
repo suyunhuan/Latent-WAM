@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cpu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: >-
+          python -m pip install
+          torch==2.4.1 torchvision==0.19.1
+          --index-url https://download.pytorch.org/whl/cpu
+      - run: >-
+          python -m pip install
+          numpy==1.23.4 pytest==8.3.3 hydra-core==1.3.2
+          -r requirements-latent-wam.txt
+      - run: python -m pytest tests/latent_wam -q
+      - run: python -m compileall -q navsim/agents/latent_wam scripts
+      - run: python scripts/check_release_hygiene.py

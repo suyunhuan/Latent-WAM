@@ -1,40 +1,26 @@
 from enum import IntEnum
 from typing import Any, Dict, List, Tuple
+
 import cv2
 import numpy as np
 import numpy.typing as npt
-from pathlib import Path
-import pickle
-import gzip
-
 import torch
-from torchvision import transforms
-
-from shapely import affinity
-from shapely.geometry import Polygon, LineString
-
-from nuplan.common.maps.abstract_map import AbstractMap, SemanticMapLayer, MapObject
 from nuplan.common.actor_state.oriented_box import OrientedBox
 from nuplan.common.actor_state.state_representation import StateSE2
 from nuplan.common.actor_state.tracked_objects_types import TrackedObjectType
+from nuplan.common.maps.abstract_map import AbstractMap, MapObject, SemanticMapLayer
+from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+from shapely import affinity
+from shapely.geometry import LineString, Polygon
+from torchvision import transforms
 
 from navsim.agents.transfuser.transfuser_config import TransfuserConfig
-from navsim.common.dataclasses import AgentInput, Scene, Annotations
+from navsim.common.dataclasses import AgentInput, Annotations, Scene
 from navsim.common.enums import BoundingBoxIndex, LidarIndex
 from navsim.planning.scenario_builder.navsim_scenario_utils import tracked_object_types
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 
-from worldmirror.src.models.models.worldmirror import WorldMirror
-from worldmirror.src.utils.inference_utils import prepare_images_to_tensor
-from transformers import AutoImageProcessor, AutoModel
 
-def dump_feature_target_to_pickle(path: Path, data_dict: Dict[str, torch.Tensor]) -> None:
-    """Helper function to save feature/target to pickle."""
-    # Use compresslevel = 1 to compress the size but also has fast write and read.
-    data_dict_cpu = {k: v.float().detach().cpu() for k, v in data_dict.items()}
-    with gzip.open(path, "wb", compresslevel=1) as f:
-        pickle.dump(data_dict_cpu, f)
-        
 class TransfuserFeatureBuilder(AbstractFeatureBuilder):
     """Input feature builder for TransFuser."""
 
@@ -44,367 +30,6 @@ class TransfuserFeatureBuilder(AbstractFeatureBuilder):
         :param config: global config dataclass of TransFuser
         """
         self._config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # DINO and WorldMirror
-        if self._config.cache_mode:
-            self.dino_model = AutoModel.from_pretrained('/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/dinov2-large').to(self.device)
-            self.dino_processor = AutoImageProcessor.from_pretrained('/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/dinov2-large')
-
-            self.geometry_model = WorldMirror.from_pretrained("/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/HunyuanWorld-Mirror").to(self.device)
-            self.geometry_processor = AutoImageProcessor.from_pretrained('/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/dinov2-large')
-            self.geometry_processor.do_normalize = False
-
-    def get_unique_name(self) -> str:
-        """Inherited, see superclass."""
-        return "transfuser_feature"
-    
-    def get_dino_feature(self, camera_inputs: List[np.ndarray]) -> torch.Tensor:
-        return self.dino_model(**self.dino_processor(images=camera_inputs, return_tensors="pt").to(self.device)).last_hidden_state
-    
-    def get_geometry_feature(self, camera_inputs: List[np.ndarray]) -> torch.Tensor:
-        return self.geometry_model(**self.geometry_processor(images=camera_inputs, return_tensors="pt").to(self.device)).last_hidden_state
-
-    def compute_features(self, agent_input: AgentInput, scene: Scene, feature_cache_path: Path) -> Dict[str, torch.Tensor]:
-        """Inherited, see superclass."""
-        features = {}
-        final_features = {}
-        save_dict = {}
-        
-        # Get the token list of the scene to identify the frames
-        frame_tokens = [frame.token for frame in scene.frames[:-2]]
-        
-        final_features["camera_feature"] = frame_tokens[3]
-        final_features["camera_feature_prev_1"] = frame_tokens[2]
-        final_features["camera_feature_prev_2"] = frame_tokens[1]
-        final_features["camera_feature_prev_3"] = frame_tokens[0]
-        final_features["camera_feature_next_1"] = frame_tokens[4]
-        final_features["camera_feature_next_2"] = frame_tokens[5]
-        final_features["camera_feature_next_3"] = frame_tokens[6]
-        final_features["camera_feature_next_4"] = frame_tokens[7]
-        final_features["camera_feature_next_5"] = frame_tokens[8]
-        final_features["camera_feature_next_6"] = frame_tokens[9]
-        final_features["camera_feature_next_7"] = frame_tokens[10]
-        final_features["camera_feature_next_8"] = frame_tokens[11]
-        
-        camera_feature = self._get_camera_feature(agent_input)
-        
-        final_features["status_feature"] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[3].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[3].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[3].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        # features['camera'],features['intrinsics']=self._get_camera_intrinsics_feature(agent_input)
-        dino_camera_feature = self.dino_processor(images=camera_feature, return_tensors="pt").to(self.device)
-        features["camera_feature"] = self.get_dino_feature(camera_feature)
-
-        ## 添加前几帧的信息
-        camera_feature_prev_1, camera_feature_prev_2, camera_feature_prev_3 = self._get_camera_feature_prev(agent_input)
-        features["camera_feature_prev_1"] = self.get_dino_feature(camera_feature_prev_1)
-        features["camera_feature_prev_2"] = self.get_dino_feature(camera_feature_prev_2)
-        features["camera_feature_prev_3"] = self.get_dino_feature(camera_feature_prev_3)
-        final_features['status_feature_prev_1'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[2].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[2].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[2].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_prev_2'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[1].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[1].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[1].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_prev_3'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[0].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[0].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[0].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-
-        # 添加后几帧的信息
-        camera_feature_next_1, camera_feature_next_2, camera_feature_next_3, camera_feature_next_4, camera_feature_next_5, camera_feature_next_6, camera_feature_next_7, camera_feature_next_8 = self._get_camera_feature_next(agent_input)
-        features["camera_feature_next_1"] = self.get_dino_feature(camera_feature_next_1)
-        features["camera_feature_next_2"] = self.get_dino_feature(camera_feature_next_2)
-        features["camera_feature_next_3"] = self.get_dino_feature(camera_feature_next_3)
-        features["camera_feature_next_4"] = self.get_dino_feature(camera_feature_next_4)
-        features["camera_feature_next_5"] = self.get_dino_feature(camera_feature_next_5)
-        features["camera_feature_next_6"] = self.get_dino_feature(camera_feature_next_6)
-        features["camera_feature_next_7"] = self.get_dino_feature(camera_feature_next_7)
-        features["camera_feature_next_8"] = self.get_dino_feature(camera_feature_next_8)
-        
-        final_features['status_feature_next_1'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[4].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[4].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[4].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_next_2'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[5].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[5].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[5].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_next_3'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[6].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[6].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[6].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_next_4'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[7].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[7].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[7].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_next_5'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[8].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[8].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[8].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_next_6'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[9].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[9].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[9].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_next_7'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[10].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[10].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[10].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        final_features['status_feature_next_8'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[11].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[11].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[11].ego_acceleration, dtype=torch.float32),
-            ],
-        )   
-        # 添加历史轨迹信息
-        ## 检查agent_input是否存在属性history_trajectory
-        if 'history_trajectory' in dir(agent_input):
-            if agent_input.history_trajectory is not None:
-                final_features['history_trajectory'] = torch.tensor(agent_input.history_trajectory, dtype=torch.float32)  # [4,3]
-                
-        for key, value in final_features.items():
-            if 'camera_feature' in key:
-                save_dict[value] = {
-                    'dino_feature': features[key],
-                    'geometry_feature': self.get_geometry_feature(value)
-                }
-        
-        for token_name, cache_feature in save_dict.items():
-            save_path = feature_cache_path / f"{token_name}.gz"
-            if save_path.exists():
-                print(f"跳过已存在的文件: {save_path}")
-                continue
-            dump_feature_target_to_pickle(save_path, cache_feature)
-            
-        return final_features
-
-    def _get_camera_feature(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-        # cameras = agent_input.cameras[-1]
-        cameras = agent_input.cameras[3]
-
-        # Crop to ensure 4:1 aspect ratio
-        l0 = cameras.cam_l0.image
-        f0 = cameras.cam_f0.image
-        r0 = cameras.cam_r0.image
-
-        return np.stack([l0, f0, r0], axis=0)
-    
-    def _get_camera_feature_prev(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-        
-        def proc(cam):
-            l0 = cam.cam_l0.image
-            f0 = cam.cam_f0.image
-            r0 = cam.cam_r0.image
-            return np.stack([l0, f0, r0], axis=0)
-
-        # 依次处理 3,2,1 帧
-        return tuple(proc(agent_input.cameras[i]) for i in (2, 1, 0))
-
-    def _get_camera_feature_next(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-    
-        def proc(cam):
-            l0 = cam.cam_l0.image
-            f0 = cam.cam_f0.image
-            r0 = cam.cam_r0.image
-            return np.stack([l0, f0, r0], axis=0)
-
-        # 依次处理 +1, +2, +3, +4, +5, +6, +7, +8
-        return tuple(proc(agent_input.cameras[i]) for i in (4, 5, 6, 7, 8, 9, 10, 11))
-
-    def crop_and_resize(self,image, K, crop_pixels, new_width, new_height):
-        """
-        对图像进行上下对称裁剪后，再resize，同时更新相机内参矩阵
-
-        参数:
-        image: 原始图像 (numpy 数组)
-        K: 原始相机内参矩阵，形状 (3, 3)
-        crop_pixels: 上下各裁剪的像素数
-        new_width: resize后的图像宽度
-        new_height: resize后的图像高度
-
-        返回:
-        resized_image: 裁剪并resize后的图像
-        K_new: 更新后的相机内参矩阵
-        """
-        # 原图尺寸
-        h, w = image.shape[:2]
-
-        # 1. 对图像上下各裁剪crop_pixels个像素
-        cropped_image = image[crop_pixels:h-crop_pixels, :]  # 水平方向不裁剪
-        # 更新主点的y坐标（c_y）: 原来的 c_y 需要减去裁剪掉的上部像素数
-        K_crop = K.copy()
-        K_crop[1, 2] -= crop_pixels
-
-        # 裁剪后图像高度
-        h_crop = h - 2 * crop_pixels
-
-        # 2. Resize: 计算x和y方向的缩放因子
-        s_x = new_width / w
-        s_y = new_height / h_crop
-
-        # resize图像
-        resized_image = cv2.resize(cropped_image, (new_width, new_height))
-
-        # 3. 更新相机内参矩阵
-        K_new = K_crop.copy()
-        K_new[0, 0] *= s_x  # fx
-        K_new[1, 1] *= s_y  # fy
-        K_new[0, 2] *= s_x  # cx
-        K_new[1, 2] *= s_y  # cy
-
-        return resized_image, K_new
-
-    def _get_camera_intrinsics_feature(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-
-        cameras = agent_input.cameras[-1]
-
-        f0 = cameras.cam_f0.image
-        l0 = cameras.cam_l0.image
-        r0 = cameras.cam_r0.image
-
-        f0_intrinsics = cameras.cam_f0.intrinsics
-        l0_intrinsics = cameras.cam_l0.intrinsics
-        r0_intrinsics = cameras.cam_r0.intrinsics
-
-        images_list = [f0, l0, r0]
-        inputs = self.geometry_processor(images=images_list, return_tensors="pt")  # inputs.pixel_values.shape: [3, 3, 224, 224]
-
-        intrinsics_list = [f0_intrinsics, l0_intrinsics, r0_intrinsics]
-
-        crop_pixels = (256 - 224) // 2
-        new_width = 224
-        new_height = 224
-        resized_image, K_new = self.crop_and_resize(f0, cameras.cam_f0.intrinsics, crop_pixels, new_width, new_height)
-        
-        # r0 = cameras.cam_r0.image[28:-28, 416:-416]
-
-        # stitch l0, f0, r0 images
-        # stitched_image = np.concatenate([l0, f0, r0], axis=1)
-        # resized_image = cv2.resize(f0, (480, 256))
-        # tensor_image = transforms.ToTensor()(resized_image)
-
-        return resized_image,K_new
-
-    def _get_lidar_feature(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Compute LiDAR feature as 2D histogram, according to Transfuser
-        :param agent_input: input dataclass
-        :return: LiDAR histogram as torch tensors
-        """
-
-        # only consider (x,y,z) & swap axes for (N,3) numpy array
-        lidar_pc = agent_input.lidars[-1].lidar_pc[LidarIndex.POSITION].T
-
-        # NOTE: Code from
-        # https://github.com/autonomousvision/carla_garage/blob/main/team_code/data.py#L873
-        def splat_points(point_cloud):
-            # 256 x 256 grid
-            xbins = np.linspace(
-                self._config.lidar_min_x,
-                self._config.lidar_max_x,
-                (self._config.lidar_max_x - self._config.lidar_min_x) * int(self._config.pixels_per_meter) + 1,
-            )
-            ybins = np.linspace(
-                self._config.lidar_min_y,
-                self._config.lidar_max_y,
-                (self._config.lidar_max_y - self._config.lidar_min_y) * int(self._config.pixels_per_meter) + 1,
-            )
-            hist = np.histogramdd(point_cloud[:, :2], bins=(xbins, ybins))[0]
-            hist[hist > self._config.hist_max_per_pixel] = self._config.hist_max_per_pixel
-            overhead_splat = hist / self._config.hist_max_per_pixel
-            return overhead_splat
-
-        # Remove points above the vehicle
-        lidar_pc = lidar_pc[lidar_pc[..., 2] < self._config.max_height_lidar]
-        below = lidar_pc[lidar_pc[..., 2] <= self._config.lidar_split_height]
-        above = lidar_pc[lidar_pc[..., 2] > self._config.lidar_split_height]
-        above_features = splat_points(above)
-        if self._config.use_ground_plane:
-            below_features = splat_points(below)
-            features = np.stack([below_features, above_features], axis=-1)
-        else:
-            features = np.stack([above_features], axis=-1)
-        features = np.transpose(features, (2, 0, 1)).astype(np.float32)
-
-        return torch.tensor(features)
-
-class World4DriveFeatureBuilder(AbstractFeatureBuilder):
-    """Input feature builder for TransFuser."""
-
-    def __init__(self, config: TransfuserConfig):
-        """
-        Initializes feature builder.
-        :param config: global config dataclass of TransFuser
-        """
-        self._config = config
-        self.cache_path = config.agent.cache_path
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # DINO and WorldMirror
-        self.dino_model = AutoModel.from_pretrained('/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/dinov2-large').to(self.device)
-        self.dino_processor = AutoImageProcessor.from_pretrained('/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/dinov2-large')
-
-        self.geometry_model = WorldMirror.from_pretrained("/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/HunyuanWorld-Mirror").to(self.device)
-        self.geometry_processor = AutoImageProcessor.from_pretrained('/vepfs-mlp2/c20250502/haoce/wlb/world4drive/checkpoints/dinov2-large')
-        self.geometry_processor.do_normalize = False
 
     def get_unique_name(self) -> str:
         """Inherited, see superclass."""
@@ -415,356 +40,19 @@ class World4DriveFeatureBuilder(AbstractFeatureBuilder):
         features = {}
 
         features["camera_feature"] = self._get_camera_feature(agent_input)
-        # features["lidar_feature"] = self._get_lidar_feature(agent_input)
+        if not self._config.latent:
+            features["lidar_feature"] = self._get_lidar_feature(agent_input)
         features["status_feature"] = torch.concatenate(
             [
-                torch.tensor(agent_input.ego_statuses[3].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[3].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[3].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        # features['camera'],features['intrinsics']=self._get_camera_intrinsics_feature(agent_input)
-
-
-        ## 添加前几帧的信息
-        camera_feature_prev_1, camera_feature_prev_2, camera_feature_prev_3 = self._get_camera_feature_prev(agent_input)
-        features["camera_feature_prev_1"] = camera_feature_prev_1
-        features["camera_feature_prev_2"] = camera_feature_prev_2
-        features["camera_feature_prev_3"] = camera_feature_prev_3
-        features['status_feature_prev_1'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[2].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[2].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[2].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_prev_2'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[1].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[1].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[1].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_prev_3'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[0].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[0].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[0].ego_acceleration, dtype=torch.float32),
+                torch.tensor(agent_input.ego_statuses[-1].driving_command, dtype=torch.float32),
+                torch.tensor(agent_input.ego_statuses[-1].ego_velocity, dtype=torch.float32),
+                torch.tensor(agent_input.ego_statuses[-1].ego_acceleration, dtype=torch.float32),
             ],
         )
 
-        # 添加后几帧的信息
-        camera_feature_next_1, camera_feature_next_2, camera_feature_next_3, camera_feature_next_4, camera_feature_next_5, camera_feature_next_6, camera_feature_next_7, camera_feature_next_8 = self._get_camera_feature_next(agent_input)
-        features["camera_feature_next_1"] = camera_feature_next_1
-        features["camera_feature_next_2"] = camera_feature_next_2
-        features["camera_feature_next_3"] = camera_feature_next_3
-        features["camera_feature_next_4"] = camera_feature_next_4
-        features["camera_feature_next_5"] = camera_feature_next_5
-        features["camera_feature_next_6"] = camera_feature_next_6
-        features["camera_feature_next_7"] = camera_feature_next_7
-        features["camera_feature_next_8"] = camera_feature_next_8
-        
-        features['status_feature_next_1'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[4].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[4].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[4].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_next_2'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[5].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[5].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[5].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_next_3'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[6].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[6].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[6].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_next_4'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[7].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[7].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[7].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_next_5'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[8].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[8].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[8].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_next_6'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[9].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[9].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[9].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_next_7'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[10].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[10].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[10].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        features['status_feature_next_8'] = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[11].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[11].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[11].ego_acceleration, dtype=torch.float32),
-            ],
-        )   
-        # 添加历史轨迹信息
-        ## 检查agent_input是否存在属性history_trajectory
-        if 'history_trajectory' in dir(agent_input):
-            if agent_input.history_trajectory is not None:
-                features['history_trajectory'] = torch.tensor(agent_input.history_trajectory, dtype=torch.float32)  # [4,3]
         return features
-
-    def compute_features_cache(self, agent_input: AgentInput, scene: Scene) -> Dict[str, torch.Tensor]:
-        """Inherited, see superclass."""
-        features = {}
-        
-        # camera_feature: [cur, prev, future]
-        camera_features = {}
-
-        camera_features['camera_features'] = self._get_camera_feature(agent_input)
-        camera_feature_prev_1, camera_feature_prev_2, camera_feature_prev_3 = self._get_camera_feature_prev(agent_input)
-        camera_feature_next_1, camera_feature_next_2, camera_feature_next_3, camera_feature_next_4, camera_feature_next_5, camera_feature_next_6, camera_feature_next_7, camera_feature_next_8 = self._get_camera_feature_next(agent_input)
-
-        # cache dino and vggt feature
-        for frame_token, image in camera_features.items():
-            pass 
-        
-        # status_feature: [cur, prev, future]
-        status_feature = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[3].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[3].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[3].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-
-        # prev
-        status_feature_prev_1 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[2].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[2].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[2].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_prev_2 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[1].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[1].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[1].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_prev_3 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[0].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[0].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[0].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-
-        # future
-        status_feature_next_1 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[4].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[4].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[4].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_next_2 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[5].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[5].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[5].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_next_3 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[6].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[6].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[6].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_next_4 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[7].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[7].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[7].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_next_5 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[8].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[8].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[8].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_next_6 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[9].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[9].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[9].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_next_7 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[10].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[10].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[10].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-        status_feature_next_8 = torch.concatenate(
-            [
-                torch.tensor(agent_input.ego_statuses[11].driving_command, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[11].ego_velocity, dtype=torch.float32),
-                torch.tensor(agent_input.ego_statuses[11].ego_acceleration, dtype=torch.float32),
-            ],
-        )
-
-        # 添加历史轨迹信息
-        if 'history_trajectory' in dir(agent_input):
-            if agent_input.history_trajectory is not None:
-                features['history_trajectory'] = torch.tensor(agent_input.history_trajectory, dtype=torch.float32)  # [4, 3]
-
-        # get final features
-        features['']
-        return features
-        
-    # def _get_camera_feature(self, agent_input: AgentInput) -> torch.Tensor:
-    #     """
-    #     Extract stitched camera from AgentInput
-    #     :param agent_input: input dataclass
-    #     :return: stitched front view image as torch tensor
-    #     """
-    #     # cameras = agent_input.cameras[-1]
-    #     cameras = agent_input.cameras[3]
-
-    #     # Crop to ensure 4:1 aspect ratio
-    #     l0 = cameras.cam_l0.image[28:-28, 416:-416]
-    #     f0 = cameras.cam_f0.image[28:-28]
-    #     r0 = cameras.cam_r0.image[28:-28, 416:-416]
-
-    #     # stitch l0, f0, r0 images
-    #     stitched_image = np.concatenate([l0, f0, r0], axis=1)
-    #     # resized_image = cv2.resize(f0, (480, 256))
-    #     resized_image = cv2.resize(stitched_image, (1024, 256))
-    #     tensor_image = transforms.ToTensor()(resized_image)
-
-    #     return tensor_image
 
     def _get_camera_feature(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-        # cameras = agent_input.cameras[-1]
-        cameras = agent_input.cameras[3]
-
-        # Crop to ensure 4:1 aspect ratio
-        l0 = cameras.cam_l0.image[28:-28, 416:-416]
-        f0 = cameras.cam_f0.image[28:-28]
-        r0 = cameras.cam_r0.image[28:-28, 416:-416]
-
-        # stitch l0, f0, r0 images
-        stitched_image = np.concatenate([l0, f0, r0], axis=1)
-        # resized_image = cv2.resize(f0, (480, 256))
-        resized_image = cv2.resize(stitched_image, (1024, 256))
-        tensor_image = transforms.ToTensor()(resized_image)
-
-        return tensor_image
-    
-    def _get_camera_feature_prev(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-        # 内联函数：裁剪、拼接、缩放并转为Tensor
-        def proc(cam):
-            l0 = cam.cam_l0.image[28:-28, 416:-416]
-            f0 = cam.cam_f0.image[28:-28]
-            r0 = cam.cam_r0.image[28:-28, 416:-416]
-            stitched = np.concatenate([l0, f0, r0], axis=1)
-            resized = cv2.resize(stitched, (1024, 256))
-            return transforms.ToTensor()(resized)
-
-        # 依次处理 3,2,1 帧
-        return tuple(proc(agent_input.cameras[i]) for i in (2, 1, 0))
-
-    def _get_camera_feature_next(self, agent_input: AgentInput) -> torch.Tensor:
-        """
-        Extract stitched camera from AgentInput
-        :param agent_input: input dataclass
-        :return: stitched front view image as torch tensor
-        """
-        # 内联函数：裁剪、拼接、缩放并转为Tensor
-        def proc(cam):
-            l0 = cam.cam_l0.image[28:-28, 416:-416]
-            f0 = cam.cam_f0.image[28:-28]
-            r0 = cam.cam_r0.image[28:-28, 416:-416]
-            stitched = np.concatenate([l0, f0, r0], axis=1)
-            resized = cv2.resize(stitched, (1024, 256))
-            return transforms.ToTensor()(resized)
-
-        # 依次处理 +1, +2, +3, +4, +5, +6, +7, +8
-        return tuple(proc(agent_input.cameras[i]) for i in (4, 5, 6, 7, 8, 9, 10, 11))
-
-    def crop_and_resize(self,image, K, crop_pixels, new_width, new_height):
-        """
-        对图像进行上下对称裁剪后，再resize，同时更新相机内参矩阵
-
-        参数:
-        image: 原始图像 (numpy 数组)
-        K: 原始相机内参矩阵，形状 (3, 3)
-        crop_pixels: 上下各裁剪的像素数
-        new_width: resize后的图像宽度
-        new_height: resize后的图像高度
-
-        返回:
-        resized_image: 裁剪并resize后的图像
-        K_new: 更新后的相机内参矩阵
-        """
-        # 原图尺寸
-        h, w = image.shape[:2]
-
-        # 1. 对图像上下各裁剪crop_pixels个像素
-        cropped_image = image[crop_pixels:h-crop_pixels, :]  # 水平方向不裁剪
-        # 更新主点的y坐标（c_y）: 原来的 c_y 需要减去裁剪掉的上部像素数
-        K_crop = K.copy()
-        K_crop[1, 2] -= crop_pixels
-
-        # 裁剪后图像高度
-        h_crop = h - 2 * crop_pixels
-
-        # 2. Resize: 计算x和y方向的缩放因子
-        s_x = new_width / w
-        s_y = new_height / h_crop
-
-        # resize图像
-        resized_image = cv2.resize(cropped_image, (new_width, new_height))
-
-        # 3. 更新相机内参矩阵
-        K_new = K_crop.copy()
-        K_new[0, 0] *= s_x  # fx
-        K_new[1, 1] *= s_y  # fy
-        K_new[0, 2] *= s_x  # cx
-        K_new[1, 2] *= s_y  # cy
-
-        return resized_image, K_new
-
-    def _get_camera_intrinsics_feature(self, agent_input: AgentInput) -> torch.Tensor:
         """
         Extract stitched camera from AgentInput
         :param agent_input: input dataclass
@@ -774,20 +62,16 @@ class World4DriveFeatureBuilder(AbstractFeatureBuilder):
         cameras = agent_input.cameras[-1]
 
         # Crop to ensure 4:1 aspect ratio
-        # l0 = cameras.cam_l0.image[28:-28, 416:-416]
-        f0 = cameras.cam_f0.image
-        crop_pixels=28
-        new_width=480
-        new_height=256
-        resized_image,K_new=self.crop_and_resize(f0,cameras.cam_f0.intrinsics,crop_pixels,new_width,new_height)
-        # r0 = cameras.cam_r0.image[28:-28, 416:-416]
+        l0 = cameras.cam_l0.image[28:-28, 416:-416]
+        f0 = cameras.cam_f0.image[28:-28]
+        r0 = cameras.cam_r0.image[28:-28, 416:-416]
 
         # stitch l0, f0, r0 images
-        # stitched_image = np.concatenate([l0, f0, r0], axis=1)
-        # resized_image = cv2.resize(f0, (480, 256))
-        # tensor_image = transforms.ToTensor()(resized_image)
+        stitched_image = np.concatenate([l0, f0, r0], axis=1)
+        resized_image = cv2.resize(stitched_image, (1024, 256))
+        tensor_image = transforms.ToTensor()(resized_image)
 
-        return resized_image,K_new
+        return tensor_image
 
     def _get_lidar_feature(self, agent_input: AgentInput) -> torch.Tensor:
         """
@@ -836,11 +120,17 @@ class World4DriveFeatureBuilder(AbstractFeatureBuilder):
 class TransfuserTargetBuilder(AbstractTargetBuilder):
     """Output target builder for TransFuser."""
 
-    def __init__(self, config: TransfuserConfig):
+    def __init__(
+        self,
+        trajectory_sampling: TrajectorySampling,
+        config: TransfuserConfig,
+    ):
         """
         Initializes target builder.
+        :param trajectory_sampling: trajectory sampling specification
         :param config: global config dataclass of TransFuser
         """
+        self._trajectory_sampling = trajectory_sampling
         self._config = config
 
     def get_unique_name(self) -> str:
@@ -849,23 +139,9 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
 
     def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
         """Inherited, see superclass."""
-        #计算前几帧对应的历史轨迹
-        scene.scene_metadata.num_history_frames = 3
-        trajectory_prev_1 = torch.tensor(
-            scene.get_future_trajectory(num_trajectory_frames=self._config.trajectory_sampling.num_poses).poses
-        )
-        scene.scene_metadata.num_history_frames = 2
-        trajectory_prev_2 = torch.tensor(
-            scene.get_future_trajectory(num_trajectory_frames=self._config.trajectory_sampling.num_poses).poses
-        )
-        scene.scene_metadata.num_history_frames = 1
-        trajectory_prev_3 = torch.tensor(
-            scene.get_future_trajectory(num_trajectory_frames=self._config.trajectory_sampling.num_poses).poses
-        )
 
-        scene.scene_metadata.num_history_frames = 4  # 恢复默认值
         trajectory = torch.tensor(
-            scene.get_future_trajectory(num_trajectory_frames=self._config.trajectory_sampling.num_poses).poses
+            scene.get_future_trajectory(num_trajectory_frames=self._trajectory_sampling.num_poses).poses
         )
         frame_idx = scene.scene_metadata.num_history_frames - 1
         annotations = scene.frames[frame_idx].annotations
@@ -874,47 +150,12 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
         agent_states, agent_labels = self._compute_agent_targets(annotations)
         bev_semantic_map = self._compute_bev_semantic_map(annotations, scene.map_api, ego_pose)
 
-        # 计算前几帧的信息
-        frame_idx_prev_1 = scene.scene_metadata.num_history_frames - 2
-        frame_idx_prev_2 = scene.scene_metadata.num_history_frames - 3
-        frame_idx_prev_3 = scene.scene_metadata.num_history_frames - 4
-        annotations_prev_1 = scene.frames[frame_idx_prev_1].annotations
-        annotations_prev_2 = scene.frames[frame_idx_prev_2].annotations
-        annotations_prev_3 = scene.frames[frame_idx_prev_3].annotations
-        ego_pose_prev_1 = StateSE2(*scene.frames[frame_idx_prev_1].ego_status.ego_pose)
-        ego_pose_prev_2 = StateSE2(*scene.frames[frame_idx_prev_2].ego_status.ego_pose)
-        ego_pose_prev_3 = StateSE2(*scene.frames[frame_idx_prev_3].ego_status.ego_pose)
-        agent_states_prev_1, agent_labels_prev_1 = self._compute_agent_targets(annotations_prev_1)
-        agent_states_prev_2, agent_labels_prev_2 = self._compute_agent_targets(annotations_prev_2)
-        agent_states_prev_3, agent_labels_prev_3 = self._compute_agent_targets(annotations_prev_3)
-        bev_semantic_map_prev_1 = self._compute_bev_semantic_map(annotations_prev_1, scene.map_api, ego_pose_prev_1)
-        bev_semantic_map_prev_2 = self._compute_bev_semantic_map(annotations_prev_2, scene.map_api, ego_pose_prev_2)
-        bev_semantic_map_prev_3 = self._compute_bev_semantic_map(annotations_prev_3, scene.map_api, ego_pose_prev_3)
-
         return {
             "trajectory": trajectory,
             "agent_states": agent_states,
             "agent_labels": agent_labels,
             "bev_semantic_map": bev_semantic_map,
-            "trajectory_prev_1": trajectory_prev_1,
-            "agent_states_prev_1": agent_states_prev_1,
-            "agent_labels_prev_1": agent_labels_prev_1,
-            "bev_semantic_map_prev_1": bev_semantic_map_prev_1,
-            "trajectory_prev_2": trajectory_prev_2,
-            "agent_states_prev_2": agent_states_prev_2,
-            "agent_labels_prev_2": agent_labels_prev_2,
-            "bev_semantic_map_prev_2": bev_semantic_map_prev_2,
-            "trajectory_prev_3": trajectory_prev_3,
-            "agent_states_prev_3": agent_states_prev_3,
-            "agent_labels_prev_3": agent_labels_prev_3,
-            "bev_semantic_map_prev_3": bev_semantic_map_prev_3,
         }
-        # return {
-        #     "trajectory": trajectory,
-        #     "agent_states": agent_states,
-        #     "agent_labels": agent_labels,
-        #     "bev_semantic_map": bev_semantic_map,
-        # }
 
     def _compute_agent_targets(self, annotations: Annotations) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -939,7 +180,12 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
             )
 
             if name == "vehicle" and _xy_in_lidar(box_x, box_y, self._config):
-                agent_states_list.append(np.array([box_x, box_y, box_heading, box_length, box_width], dtype=np.float32))
+                agent_states_list.append(
+                    np.array(
+                        [box_x, box_y, box_heading, box_length, box_width],
+                        dtype=np.float32,
+                    )
+                )
 
         agents_states_arr = np.array(agent_states_list)
 
@@ -1025,7 +271,13 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
                 linestring: LineString = self._geometry_local_coords(map_object.baseline_path.linestring, ego_pose)
                 points = np.array(linestring.coords).reshape((-1, 1, 2))
                 points = self._coords_to_pixel(points)
-                cv2.polylines(map_linestring_mask, [points], isClosed=False, color=255, thickness=2)
+                cv2.polylines(
+                    map_linestring_mask,
+                    [points],
+                    isClosed=False,
+                    color=255,
+                    thickness=2,
+                )
         # OpenCV has origin on top-left corner
         map_linestring_mask = np.rot90(map_linestring_mask)[::-1]
         return map_linestring_mask > 0
@@ -1043,7 +295,11 @@ class TransfuserTargetBuilder(AbstractTargetBuilder):
             if agent_type in layers:
                 # box_value = (x, y, z, length, width, height, yaw) TODO: add intenum
                 x, y, heading = box_value[0], box_value[1], box_value[-1]
-                box_length, box_width, box_height = box_value[3], box_value[4], box_value[5]
+                box_length, box_width, box_height = (
+                    box_value[3],
+                    box_value[4],
+                    box_value[5],
+                )
                 agent_box = OrientedBox(StateSE2(x, y, heading), box_length, box_width, box_height)
                 exterior = np.array(agent_box.geometry.exterior.coords).reshape((-1, 1, 2))
                 exterior = self._coords_to_pixel(exterior)
@@ -1134,32 +390,6 @@ class BoundingBox2DIndex(IntEnum):
     def Y(cls):
         return cls._Y
 
-    @classmethod
-    @property
-    def HEADING(cls):
-        return cls._HEADING
-
-    @classmethod
-    @property
-    def LENGTH(cls):
-        return cls._LENGTH
-
-    @classmethod
-    @property
-    def WIDTH(cls):
-        return cls._WIDTH
-
-    @classmethod
-    @property
-    def POINT(cls):
-        # assumes X, Y have subsequent indices
-        return slice(cls._X, cls._Y + 1)
-
-    @classmethod
-    @property
-    def STATE_SE2(cls):
-        # assumes X, Y, HEADING have subsequent indices
-        return slice(cls._X, cls._HEADING + 1)
     @classmethod
     @property
     def HEADING(cls):

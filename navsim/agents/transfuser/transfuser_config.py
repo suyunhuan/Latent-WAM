@@ -2,17 +2,13 @@ from dataclasses import dataclass
 from typing import Tuple
 
 import numpy as np
-from nuplan.common.maps.abstract_map import SemanticMapLayer
 from nuplan.common.actor_state.tracked_objects_types import TrackedObjectType
-from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
+from nuplan.common.maps.abstract_map import SemanticMapLayer
 
 
 @dataclass
 class TransfuserConfig:
     """Global TransFuser config."""
-    use_depth: bool=False
-
-    trajectory_sampling: TrajectorySampling = TrajectorySampling(time_horizon=4, interval_length=0.5)
 
     image_architecture: str = "resnet34"
     lidar_architecture: str = "resnet34"
@@ -66,33 +62,13 @@ class TransfuserConfig:
     use_semantic = False
     use_depth = False
     add_features = True
-    cache_mode: bool = False
 
     # Transformer
     tf_d_model: int = 256
     tf_d_ffn: int = 1024
-    tf_num_layers: int = 4
+    tf_num_layers: int = 3
     tf_num_head: int = 8
     tf_dropout: float = 0.0
-
-    # geometry transformer decoder
-    gtf_d_model: int = 256
-    gtf_d_ffn: int = 1024
-    gtf_num_layers: int = 4
-    gtf_num_head: int = 8
-    gtf_dropout: float = 0.0
-    num_geometry_feature_token: int = 519
-    geometry_loss_weight: float = 0.6
-
-    dino_d_model: int = 384
-
-    # LoRA config
-    use_lora: bool = True
-    lora_rank: int = 64
-    lora_alpha: int = 128
-    lora_dropout: float = 0.0
-    lora_target_modules: str = "all-linear"
-    use_rslora: bool = True
 
     # detection
     num_bounding_boxes: int = 30
@@ -102,13 +78,15 @@ class TransfuserConfig:
     agent_class_weight: float = 10.0
     agent_box_weight: float = 1.0
     bev_semantic_weight: float = 10.0
-    ego_status_loss_weight: float = 0.2
 
     # BEV mapping
     bev_semantic_classes = {
         1: ("polygon", [SemanticMapLayer.LANE, SemanticMapLayer.INTERSECTION]),  # road
         2: ("polygon", [SemanticMapLayer.WALKWAYS]),  # walkways
-        3: ("linestring", [SemanticMapLayer.LANE, SemanticMapLayer.LANE_CONNECTOR]),  # centerline
+        3: (
+            "linestring",
+            [SemanticMapLayer.LANE, SemanticMapLayer.LANE_CONNECTOR],
+        ),  # centerline
         4: (
             "box",
             [
@@ -131,83 +109,16 @@ class TransfuserConfig:
     bev_down_sample_factor: int = 4
     bev_upsample_factor: int = 2
 
-    ## model name
-    model_name: str = "W4D"  # W4D or LAW
-    model_version: int = 5  # 2 or 3 or 4
-
-    ## Soft responsibility (multi-modal supervision) settings
-    soft_resp: bool = False
-    soft_resp_tau: float = 1.0
-    soft_resp_topk: int = 0
-    cls_entropy_weight: float = 0.0
-    use_fde_for_weights: bool = True
-
-    ## world4drive config
-    num_frames: int = 12
-    num_mode: int = 18
-    num_views: int = 3
-    num_scene_query_token: int = 16
-    traj_loss_weight: float = 1.0
-    traj_cls_loss_weight: float = 0.2
-    diversity_loss_weight: float = 0.0
-    diversity_margin: float = 1.0  # 1m
-    traj_cmd_loss_weight: float = 0.5
-    use_cmd_embed: bool = True
-    use_wm: bool = True
-    use_lora: bool = True
-    traj_mode:bool = 'first'
-    wm_loss_weight: float = 0.6
-    target_momentum: float = 0.999
-    use_ar: bool = False
-    use_ar_wm: bool = False
-    action_chunk_size: int = 4
-    ar_wm_replace_prob: float = 0.1
-    _use_mlp_ensemble: bool = False
-    is_eval: bool = False
-    
-    # Curriculum Learning 配置
-    use_curriculum_learning: bool = False        # 是否启用课程学习
-    curriculum_start_epoch: int = 10             # 开始过渡的 epoch
-    curriculum_end_epoch: int = 30               # 完成过渡的 epoch
-    curriculum_start_step: int = 0               # 基于 step 的起始点（与 epoch 二选一，优先使用 step）
-    curriculum_end_step: int = 0                 # 基于 step 的结束点
-    curriculum_schedule: str = 'linear'          # 过渡策略: 'linear', 'cosine', 'step'
-
-    # 分阶段 Loss 权重调度配置
-    use_staged_loss: bool = False                           # 是否启用分阶段 loss 权重调度
-    staged_loss_schedule: str = 'linear'                    # 权重过渡策略: 'linear', 'cosine'
-    # 阶段 1: 只训 geometry + traj，不训 WM
-    staged_wm_start_epoch: int = 0                          # WM loss 开始引入的 epoch
-    staged_wm_rampup_epochs: int = 5                        # WM loss 从 0 增长到 wm_loss_weight 的 epoch 数
-    # 阶段 2~3: geometry 权重逐步衰减
-    staged_geometry_decay_start_epoch: int = 5              # geometry loss 开始衰减的 epoch
-    staged_geometry_decay_epochs: int = 10                  # geometry loss 衰减到最终值的 epoch 数
-    staged_geometry_final_weight: float = 0.1               # geometry loss 的最终权重系数（乘以 geometry_loss_weight）
-    
-    #epona config
-    # closed_traj_evaluation: bool = False
-
-    ## grpo config
-    training_mode: str = 'sl'  # sl or ft
-    ce_loss_weight: float = 0.5
-    ade_best_traj_loss_weight: float = 0.1
-    fde_best_traj_loss_weight: float = 0.1
-    only_cls_head: bool = False  # if true, only train the cls head when in ft mode
-    kl_loss_weight: float = 0.0001
-    entropy_loss_weight: float = 0.001
-    adv_temp: float = 1.0
-    diversity_end_loss_weight: float = 1.0
-
-    ## multi-modal trajectory vocab
-    use_vocab_trajs: bool = False
-    vocab_trajs_dict_path: str = ''
-    vocab_trajs_path: str = ''
-
     @property
     def bev_semantic_frame(self) -> Tuple[int, int]:
         return (self.bev_pixel_height, self.bev_pixel_width)
 
     @property
     def bev_radius(self) -> float:
-        values = [self.lidar_min_x, self.lidar_max_x, self.lidar_min_y, self.lidar_max_y]
+        values = [
+            self.lidar_min_x,
+            self.lidar_max_x,
+            self.lidar_min_y,
+            self.lidar_max_y,
+        ]
         return max([abs(value) for value in values])

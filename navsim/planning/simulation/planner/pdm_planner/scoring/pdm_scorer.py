@@ -137,7 +137,6 @@ class PDMScorer:
         map_parameters: Optional[MapParameters] = None,
         simulated_agent_detections_tracks: Optional[List[DetectionsTracks]] = None,
         human_past_trajectory: Optional[InterpolatedTrajectory] = None,
-        if_return_pdms = False
     ) -> List[pd.DataFrame]:
         """
         TODO: Update this docstring
@@ -183,7 +182,6 @@ class PDMScorer:
         multiplicative_metrics_prods, weighted_metrics_all = self._multi_metrics.prod(axis=0), self._weighted_metrics
 
         results: List[pd.DataFrame] = []
-        pdms = []
         for proposal_idx in range(self._num_proposals):
 
             no_at_fault_collisions = self._multi_metrics[MultiMetricIndex.NO_COLLISION, proposal_idx]
@@ -220,103 +218,7 @@ class PDMScorer:
                     ]
                 )
             )
-            pdms.append(pdm_score)
-        if if_return_pdms:
-            return results, pdms
         return results
-    
-    # def score_proposals(
-    #     self,
-    #     states: npt.NDArray[np.float64],
-    #     observation: PDMObservation,
-    #     centerline: PDMPath,
-    #     route_lane_ids: List[str],
-    #     drivable_area_map: PDMDrivableMap,
-    #     map_parameters: Optional[MapParameters] = None,
-    #     simulated_agent_detections_tracks: Optional[List[DetectionsTracks]] = None,
-    #     human_past_trajectory: Optional[InterpolatedTrajectory] = None,
-    # ) -> List[pd.DataFrame]:
-    #     """
-    #     TODO: Update this docstring
-    #     Scores proposal similar to nuPlan's closed-loop metrics
-    #     :param states: array representation of simulated proposals
-    #     :param observation: PDM's observation class
-    #     :param centerline: path of the centerline
-    #     :param route_lane_ids: list containing on-route lane ids
-    #     :param drivable_area_map: Occupancy map of drivable are polygons
-    #     :return: A List containing the PDMResult for each proposal
-    #     """
-    #     if simulated_agent_detections_tracks is not None:
-    #         observation.update_detections_tracks(
-    #             detection_tracks=simulated_agent_detections_tracks,
-    #         )
-
-    #     # initialize & lazy load class values
-    #     self._reset(
-    #         states,
-    #         observation,
-    #         centerline,
-    #         route_lane_ids,
-    #         drivable_area_map,
-    #         human_past_trajectory,
-    #     )
-
-    #     # fill value ego-area array (used in multiple metrics)
-    #     self._calculate_ego_area()
-
-    #     # 1. multiplicative metrics
-    #     self._calculate_no_at_fault_collision()
-    #     self._calculate_drivable_area_compliance()
-    #     self._calculate_traffic_light_compliance()
-    #     self._calculate_driving_direction_compliance()
-
-    #     # 2. weighted metrics
-    #     self._calculate_progress()
-    #     self._calculate_ttc()
-    #     self._calculate_lane_keeping()
-    #     self._calculate_history_comfort()
-
-    #     pdm_scores = self._aggregate_pdm_scores()
-    #     multiplicative_metrics_prods, weighted_metrics_all = self._multi_metrics.prod(axis=0), self._weighted_metrics
-
-    #     results: List[pd.DataFrame] = []
-    #     for proposal_idx in range(self._num_proposals):
-
-    #         no_at_fault_collisions = self._multi_metrics[MultiMetricIndex.NO_COLLISION, proposal_idx]
-    #         drivable_area_compliance = self._multi_metrics[MultiMetricIndex.DRIVABLE_AREA, proposal_idx]
-    #         driving_direction_compliance = self._multi_metrics[MultiMetricIndex.DRIVING_DIRECTION, proposal_idx]
-    #         traffic_light_compliance = self._multi_metrics[MultiMetricIndex.TRAFFIC_LIGHT_COMPLIANCE, proposal_idx]
-
-    #         ego_progress = self._weighted_metrics[WeightedMetricIndex.PROGRESS, proposal_idx]
-    #         time_to_collision_within_bound = self._weighted_metrics[WeightedMetricIndex.TTC, proposal_idx]
-    #         lane_keeping = self._weighted_metrics[WeightedMetricIndex.LANE_KEEPING, proposal_idx]
-    #         history_comfort = self._weighted_metrics[WeightedMetricIndex.HISTORY_COMFORT, proposal_idx]
-
-    #         multiplicative_metrics_prod = multiplicative_metrics_prods[proposal_idx]
-    #         weighted_metrics = weighted_metrics_all[:, proposal_idx]
-    #         pdm_score = pdm_scores[proposal_idx]
-
-    #         results.append(
-    #             pd.DataFrame(
-    #                 [
-    #                     PDMResults(
-    #                         no_at_fault_collisions=no_at_fault_collisions,
-    #                         drivable_area_compliance=drivable_area_compliance,
-    #                         driving_direction_compliance=driving_direction_compliance,
-    #                         traffic_light_compliance=traffic_light_compliance,
-    #                         ego_progress=ego_progress,
-    #                         time_to_collision_within_bound=time_to_collision_within_bound,
-    #                         lane_keeping=lane_keeping,
-    #                         history_comfort=history_comfort,
-    #                         multiplicative_metrics_prod=multiplicative_metrics_prod,
-    #                         weighted_metrics=weighted_metrics,
-    #                         weighted_metrics_array=self._config.weighted_metrics_array,
-    #                         pdm_score=pdm_score,
-    #                     )
-    #                 ]
-    #             )
-    #         )
-    #     return results
 
     def _aggregate_pdm_scores(self) -> npt.NDArray[np.float64]:
         """

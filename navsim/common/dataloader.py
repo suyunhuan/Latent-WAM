@@ -4,7 +4,7 @@ import lzma
 import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-import os
+
 from tqdm import tqdm
 
 from navsim.common.dataclasses import AgentInput, Scene, SceneFilter, SensorConfig
@@ -148,15 +148,6 @@ class SceneLoader:
             self.synthetic_scenes = {}
             self.synthetic_scenes_tokens = set()
 
-        self.token_to_log_file: Dict[str, str] = {}
-        self._build_token_to_log_file()  # 构建 token_to_log_file 字典
-
-    def _build_token_to_log_file(self):
-        """Builds the token_to_log_file dictionary."""
-        for token, scene_dict_list in self.scene_frames_dicts.items():
-            log_name = scene_dict_list[0]["log_name"]
-            self.token_to_log_file[token] = log_name
-            
     @property
     def tokens(self) -> List[str]:
         """

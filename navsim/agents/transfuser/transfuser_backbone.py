@@ -30,7 +30,12 @@ class TransfuserBackbone(nn.Module):
         if config.latent:
             self.lidar_latent = nn.Parameter(
                 torch.randn(
-                    (1, in_channels, config.lidar_resolution_width, config.lidar_resolution_height),
+                    (
+                        1,
+                        in_channels,
+                        config.lidar_resolution_width,
+                        config.lidar_resolution_height,
+                    ),
                     requires_grad=True,
                 )
             )
@@ -115,7 +120,9 @@ class TransfuserBackbone(nn.Module):
         # top down
         if self.config.detect_boxes or self.config.use_bev_semantic:
             self.upsample = nn.Upsample(
-                scale_factor=self.config.bev_upsample_factor, mode="bilinear", align_corners=False
+                scale_factor=self.config.bev_upsample_factor,
+                mode="bilinear",
+                align_corners=False,
             )
             self.upsample2 = nn.Upsample(
                 size=(
@@ -130,7 +137,11 @@ class TransfuserBackbone(nn.Module):
             self.up_conv4 = nn.Conv2d(channel, channel, (3, 3), padding=1)
 
             # lateral
-            self.c5_conv = nn.Conv2d(self.lidar_encoder.feature_info.info[start_index + 3]["num_chs"], channel, (1, 1))
+            self.c5_conv = nn.Conv2d(
+                self.lidar_encoder.feature_info.info[start_index + 3]["num_chs"],
+                channel,
+                (1, 1),
+            )
 
     def top_down(self, x):
 
@@ -149,8 +160,8 @@ class TransfuserBackbone(nn.Module):
         """
         image_features, lidar_features = image, lidar
 
-        if self.config.latent:
-            batch_size = lidar.shape[0]
+        if self.config.latent and lidar_features is None:
+            batch_size = image.shape[0]
             lidar_features = self.lidar_latent.repeat(batch_size, 1, 1, 1)
 
         # Generate an iterator for all the layers in the network that one can loop through.
@@ -277,7 +288,13 @@ class GPT(nn.Module):
         # transformer
         self.blocks = nn.Sequential(
             *[
-                Block(n_embd, config.n_head, config.block_exp, config.attn_pdrop, config.resid_pdrop)
+                Block(
+                    n_embd,
+                    config.n_head,
+                    config.block_exp,
+                    config.attn_pdrop,
+                    config.resid_pdrop,
+                )
                 for layer in range(config.n_layer)
             ]
         )
@@ -322,7 +339,11 @@ class GPT(nn.Module):
         x = self.ln_f(x)  # (B, an * T, C)
 
         image_tensor_out = (
-            x[:, : self.seq_len * self.config.img_vert_anchors * self.config.img_horz_anchors, :]
+            x[
+                :,
+                : self.seq_len * self.config.img_vert_anchors * self.config.img_horz_anchors,
+                :,
+            ]
             .view(bz * self.seq_len, img_h, img_w, -1)
             .permute(0, 3, 1, 2)
             .contiguous()

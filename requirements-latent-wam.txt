@@ -1,0 +1,3 @@
+# Latent WAM-specific runtime and conversion dependencies.
+transformers==4.45.2
+safetensors==0.4.5

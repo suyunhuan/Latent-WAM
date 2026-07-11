@@ -5,7 +5,8 @@
 .pydevproject
 
 # IDE
-# .vscode/*
+.vscode/
+.qoder/
 
 # Pip
 *.egg-info
@@ -36,3 +37,15 @@ navsim.egg-info
 checkpoints
 
 datasets
+vggt
+epoch84.ckpt
+
+# Local conversion outputs and structural cache fixtures
+artifacts/
+.cache/
+.conda/
+.venv-smoke/
+.venv-ppu-smoke/
+.efc_*
+transfuser_feature.gz
+0a0a3f6cfd61530d/

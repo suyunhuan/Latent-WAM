@@ -1,0 +1,17 @@
+Latent WAM
+Copyright 2026 Latent WAM contributors
+
+This distribution includes and modifies software from NAVSIM,
+Copyright University of Tuebingen and NAVSIM contributors, licensed under
+the Apache License 2.0. See https://github.com/autonomousvision/navsim.
+
+The WorldMirror git submodule and its model weights are NOT licensed under
+the repository's Apache License 2.0. They are governed by the Tencent
+HunyuanWorld-Mirror Community License Agreement in worldmirror/License.txt.
+That license includes territorial, use, and redistribution restrictions.
+
+Required WorldMirror distribution notice:
+“Tencent HunyuanWorld-Mirror is licensed under the Tencent HunyuanWorld-Mirror Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of “Tencent Hunyuan” are owned by Tencent or its affiliate”
+
+WorldMirror is a third-party project. Tencent is not affiliated with,
+associated with, sponsoring, or endorsing Latent WAM.

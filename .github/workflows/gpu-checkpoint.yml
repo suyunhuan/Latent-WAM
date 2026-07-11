@@ -1,0 +1,17 @@
+name: GPU checkpoint smoke test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  checkpoint:
+    runs-on: [self-hosted, linux, x64, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - run: conda env create -f environment.yml
+      - run: >-
+          conda run -n latent-wam python
+          scripts/validate_latent_wam_checkpoint.py
+          "${LATENT_WAM_CHECKPOINT}"
+        env:
+          LATENT_WAM_CHECKPOINT: ${{ secrets.LATENT_WAM_CHECKPOINT }}

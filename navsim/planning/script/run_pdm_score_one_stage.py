@@ -56,8 +56,6 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[p
     ), "Simulator and scorer proposal sampling has to be identical"
     agent: AbstractAgent = instantiate(cfg.agent)
     agent.initialize()
-    agent.requires_scene=True
-    # agent.to('cuda')
 
     if cfg.traffic_agents == "non_reactive":
         traffic_agents_policy: AbstractTrafficAgentsPolicy = instantiate(
@@ -86,14 +84,11 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[p
         )
         try:
             metric_cache = metric_cache_loader.get_from_token(token)
+            agent_input = scene_loader.get_agent_input_from_token(token)
             if agent.requires_scene:
                 scene = scene_loader.get_scene_from_token(token)
-                agent_input = scene.get_agent_input()
-                # trajectory = agent.compute_trajectory(agent_input, scene)
-                trajectory = agent.compute_trajectory(agent_input)
+                trajectory = agent.compute_trajectory(agent_input, scene)
             else:
-                # 只有历史的 camera 输入
-                agent_input = scene_loader.get_agent_input_from_token(token)
                 trajectory = agent.compute_trajectory(agent_input)
 
             score_row, ego_simulated_states = pdm_score(
@@ -224,8 +219,9 @@ def create_scene_aggregators(
 
         all_updates.append(updated_rows)
 
-    all_updates_df = pd.concat(all_updates, ignore_index=True).set_index("token")
-    full_score_df.update(all_updates_df)
+    if all_updates:
+        all_updates_df = pd.concat(all_updates, ignore_index=True).set_index("token")
+        full_score_df.update(all_updates_df)
     full_score_df.reset_index(inplace=True)
     full_score_df = full_score_df.drop(columns=["ego_simulated_states"])
 
