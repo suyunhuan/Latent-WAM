@@ -205,11 +205,20 @@ def _run_cache(cfg: DictConfig, context: DistributedCacheContext) -> None:
             else:
                 pending_tokens.append(token)
 
+        failures: List[CacheFailure] = []
         extractor = None
         if pending_tokens:
-            extractor = WorldMirrorFeatureExtractor.from_pretrained(config.geometry, config.vision)
+            try:
+                extractor = WorldMirrorFeatureExtractor.from_pretrained(config.geometry, config.vision)
+            except Exception as error:
+                logger.exception("Rank %d failed to initialize WorldMirror", context.rank)
+                failure_message = f"WorldMirror initialization failed: {type(error).__name__}: {error}"
+                failures.extend(
+                    CacheFailure(token=token, log_name=token_to_log[token], error=failure_message)
+                    for token in pending_tokens
+                )
+                pending_tokens = []
         succeeded_tokens: List[str] = []
-        failures: List[CacheFailure] = []
         for token in tqdm(pending_tokens, desc=f"Caching Latent WAM rank {context.rank}"):
             log_name = token_to_log[token]
             try:

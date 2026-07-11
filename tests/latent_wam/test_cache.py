@@ -1,4 +1,5 @@
 import gzip
+import os
 import pickle
 from pathlib import Path
 
@@ -79,7 +80,7 @@ def test_public_cache_dataset(tmp_path: Path) -> None:
         sample_root / "latent_wam_features_v2.gz",
         {
             "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
-            "geometry": torch.zeros((4, 3, 9, 2048)),
+            "geometry": torch.zeros((4, 3, 519, 2048)),
             "ego_status": torch.zeros((4, 8)),
             "schema_version": 2,
         },
@@ -124,7 +125,7 @@ def test_public_v2_cache_requires_schema_version(tmp_path: Path) -> None:
 def test_public_cache_is_atomically_published_and_validated(tmp_path: Path) -> None:
     features = {
         "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
-        "geometry": torch.zeros((4, 3, 9, 2048)),
+        "geometry": torch.zeros((4, 3, 519, 2048)),
         "ego_status": torch.zeros((4, 8)),
         "schema_version": 2,
     }
@@ -139,3 +140,61 @@ def test_public_cache_is_atomically_published_and_validated(tmp_path: Path) -> N
 
     target_path.write_bytes(b"broken")
     assert not is_valid_public_cache(feature_path, target_path, expected_num_poses=8)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("images", torch.zeros((4, 3, 8, 12, 3), dtype=torch.float32)),
+        ("geometry", torch.zeros((4, 3, 9, 2048), dtype=torch.float32)),
+        ("geometry", torch.zeros((4, 3, 519, 2048), dtype=torch.float64)),
+    ],
+)
+def test_public_cache_rejects_invalid_v2_tensor_structure(tmp_path: Path, field: str, value: torch.Tensor) -> None:
+    features = {
+        "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
+        "geometry": torch.zeros((4, 3, 519, 2048), dtype=torch.float32),
+        "ego_status": torch.zeros((4, 8), dtype=torch.float32),
+        "schema_version": 2,
+    }
+    features[field] = value
+
+    with pytest.raises(ValueError):
+        publish_public_cache(
+            tmp_path,
+            features,
+            {"trajectory": torch.zeros((8, 3))},
+            rank=0,
+            expected_num_poses=8,
+        )
+
+
+def test_interrupted_pair_publish_cannot_look_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    features = {
+        "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
+        "geometry": torch.zeros((4, 3, 519, 2048), dtype=torch.float32),
+        "ego_status": torch.zeros((4, 8), dtype=torch.float32),
+        "schema_version": 2,
+    }
+    targets = {"trajectory": torch.zeros((8, 3))}
+    publish_public_cache(tmp_path, features, targets, rank=0, expected_num_poses=8)
+
+    real_replace = os.replace
+    replace_calls = 0
+
+    def interrupt_second_replace(source: Path, destination: Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 2:
+            raise OSError("simulated interruption")
+        real_replace(source, destination)
+
+    monkeypatch.setattr("navsim.agents.latent_wam.cache.os.replace", interrupt_second_replace)
+    with pytest.raises(OSError, match="simulated interruption"):
+        publish_public_cache(tmp_path, features, targets, rank=0, expected_num_poses=8)
+
+    assert not is_valid_public_cache(
+        tmp_path / PUBLIC_FEATURE_NAME,
+        tmp_path / PUBLIC_TARGET_NAME,
+        expected_num_poses=8,
+    )

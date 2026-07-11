@@ -3,6 +3,7 @@
 import gzip
 import os
 import pickle
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
@@ -10,7 +11,13 @@ from typing import Any, Dict, Mapping, Tuple
 import numpy as np
 import torch
 
-from navsim.agents.latent_wam.schema import CACHE_SCHEMA_VERSION, PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
+from navsim.agents.latent_wam.schema import (
+    CACHE_GENERATION_KEY,
+    CACHE_SCHEMA_VERSION,
+    PUBLIC_FEATURE_NAME,
+    PUBLIC_GEOMETRY_TOKEN_COUNT,
+    PUBLIC_TARGET_NAME,
+)
 
 LEGACY_FRAME_KEYS: Tuple[str, ...] = (
     "camera_feature_prev_3",
@@ -95,6 +102,12 @@ def public_features_from_mapping(data: Mapping[str, Any]) -> LatentWAMFeatures:
         schema_version=int(data["schema_version"]),
     )
     features.validate()
+    if features.images.dtype != torch.uint8:
+        raise ValueError("public cache images must use uint8")
+    if features.geometry.shape[2] != PUBLIC_GEOMETRY_TOKEN_COUNT:
+        raise ValueError(f"public cache geometry must contain {PUBLIC_GEOMETRY_TOKEN_COUNT} tokens")
+    if features.geometry.dtype != torch.float32:
+        raise ValueError("public cache geometry must use float32")
     return features
 
 
@@ -135,8 +148,14 @@ def is_valid_public_cache(feature_path: Path, target_path: Path, expected_num_po
     if not feature_path.is_file() or not target_path.is_file():
         return False
     try:
-        public_features_from_mapping(load_trusted_pickle(feature_path))
-        public_trajectory_from_mapping(load_trusted_pickle(target_path), expected_num_poses)
+        feature_data = load_trusted_pickle(feature_path)
+        target_data = load_trusted_pickle(target_path)
+        feature_generation = feature_data.get(CACHE_GENERATION_KEY)
+        target_generation = target_data.get(CACHE_GENERATION_KEY)
+        if not isinstance(feature_generation, str) or not feature_generation or feature_generation != target_generation:
+            return False
+        public_features_from_mapping(feature_data)
+        public_trajectory_from_mapping(target_data, expected_num_poses)
     except Exception:
         return False
     return True
@@ -172,9 +191,12 @@ def publish_public_cache(
     target_path = sample_root / PUBLIC_TARGET_NAME
     temporary_feature = feature_path.with_name(feature_path.name + suffix)
     temporary_target = target_path.with_name(target_path.name + suffix)
+    generation = uuid.uuid4().hex
+    feature_payload = {**features, CACHE_GENERATION_KEY: generation}
+    target_payload = {**targets, CACHE_GENERATION_KEY: generation}
     try:
-        _dump_pickle(temporary_feature, features)
-        _dump_pickle(temporary_target, targets)
+        _dump_pickle(temporary_feature, feature_payload)
+        _dump_pickle(temporary_target, target_payload)
         if not is_valid_public_cache(temporary_feature, temporary_target, expected_num_poses):
             raise ValueError("temporary public cache failed validation")
         os.replace(temporary_feature, feature_path)

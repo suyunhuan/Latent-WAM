@@ -15,6 +15,7 @@ The feature file stores:
 | `geometry` | `[4, 3, 519, 2048]` | WorldMirror tokens |
 | `ego_status` | `[4, 8]` | command, velocity, acceleration |
 | `schema_version` | scalar | currently `2` |
+| `cache_generation` | string | transaction identifier shared with the target |
 
 The temporal offsets are `[-1.5, 0.0, 2.0, 4.0]` seconds. Geometry patch
 tokens start at index 7; the remaining 512 tokens align with DINO patches.
@@ -49,9 +50,11 @@ loads one independent WorldMirror encoder only when it has uncached work.
 
 Valid feature/target pairs are fully loaded and validated before being skipped.
 New pairs are written to rank/PID-specific temporary files, reloaded for
-validation, and atomically published. A failed token is recorded while the rank
-continues its remaining shard; the overall command exits non-zero after all
-ranks finish if any token failed.
+validation, and published with atomic file replacement. Feature and target
+payloads share a generation identifier, so interruption between the two
+replacements leaves an invalid pair that the next run rebuilds. A failed token
+is recorded while the rank continues its remaining shard; the overall command
+exits non-zero after all ranks finish if any token failed.
 
 Hydra logs are isolated under `metadata/rank_<rank>/`. Rank zero writes
 `metadata/cache_manifest.json` with per-rank counts and failed token details.
