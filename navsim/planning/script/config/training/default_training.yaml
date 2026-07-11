@@ -20,6 +20,9 @@ use_cache_without_dataset: false # load the training samples from the cache. sce
 force_cache_computation: true
 seed: 0
 resume_ckpt_path: null
+cache_sampler_mode: locality
+cache_shard_lru: 8
+cache_staging_path: null
 
 dataloader:
   params:

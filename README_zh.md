@@ -1,122 +1,289 @@
 # Latent WAM
 
-Latent WAM 是一个面向相机自动驾驶的 latent world-action modeling 研究实现。
-推理时，模型仅使用当前时刻的左/前/右三路图像和自车状态，预测未来 4 秒的
-自车轨迹；训练时，时序 latent world model 和 WorldMirror 几何特征作为辅助监督。
+Latent WAM 是基于 NAVSIM v2.1.2 的相机自动驾驶研究实现。推理只使用当前时刻的左、前、右三路
+相机图像和当前自车状态，预测未来 4 秒的自车轨迹。WorldMirror 几何特征仅用于生成训练缓存时的
+辅助监督。
 
-英文 [README](README.md) 是权威文档；本文件提供对应的中文使用说明。
+[English guide](README.md)
 
-## 发布内容
+## 发布状态
 
-- 只保留一个正式模型 `LatentWAMModel`，删除 W4D、LAW、RFT 和消融版本。
-- 推理接口只返回 `trajectory`、`all_trajectories`、`mode_logits`。
-- 保留 epoch-84 实际使用的 teacher-forcing 训练路径，移除未启用的课程学习、
-  自回归、轨迹 refine 和 staged loss 分支。
-- 提供带版本号的新缓存格式，以及旧 `transfuser_feature.gz` 两级缓存适配器。
-- 提供 Lightning checkpoint 到 `safetensors` 的显式转换工具。
-- 恢复并保留独立的官方 NAVSIM v2.1.2 TransFuser baseline。
+当前版本包含完整的推理、缓存生成、训练和 NAVSIM 一阶段评估代码。正式 Latent WAM checkpoint
+尚未包含在仓库中，将在后续单独发布。在此之前：
 
-## 安装
+- 用户可以安装代码并从头训练；
+- 评估需要用户自行提供兼容的 `model.safetensors`；
+- 公开 agent 配置为 `agent=latent_wam_agent`；
+- 推理输出为 `trajectory`、`all_trajectories` 和 `mode_logits`；
+- `navsim/agents/transfuser/` 是独立保留的上游 NAVSIM baseline。
 
-正式支持 Linux、Python 3.10、CUDA 12.4 和 NVIDIA GPU。CPU 可用于配置检查、
-缓存迁移、权重转换与单元测试，模型推理建议使用 GPU。
+## 环境要求
+
+正式支持环境为：
+
+- Linux x86-64；
+- Python 3.10；
+- PyTorch 2.4.1 和 torchvision 0.19.1；
+- CUDA 12.4；推理、WorldMirror 提取、训练和评估需要 NVIDIA GPU。
+
+CPU 可用于安装检查和缓存读取，但不是正式模型运行环境。
+
+## 工作区目录
+
+下文命令假设使用以下目录布局：
+
+```text
+~/latent_wam_workspace/
+├── latent-wam/                     # 当前仓库
+├── dataset/
+│   ├── maps/
+│   ├── navsim_logs/
+│   │   ├── trainval/
+│   │   └── test/
+│   └── sensor_blobs/
+│       ├── trainval/
+│       └── test/
+├── exp/
+│   ├── metric_cache/
+│   └── latent_wam_cache/
+└── models/                         # 可选的本地模型快照
+    ├── dinov2-base/
+    ├── HunyuanWorld-Mirror/
+    └── model.safetensors           # 正式 checkpoint 尚未发布
+```
+
+创建工作区，并设置 Hydra 使用的路径：
 
 ```bash
-git clone --recurse-submodules <repository-url> latent-wam
+mkdir -p "$HOME/latent_wam_workspace"/{dataset,exp,models}
+
+export NAVSIM_DEVKIT_ROOT="$HOME/latent_wam_workspace/latent-wam"
+export NAVSIM_EXP_ROOT="$HOME/latent_wam_workspace/exp"
+export OPENSCENE_DATA_ROOT="$HOME/latent_wam_workspace/dataset"
+export NUPLAN_MAPS_ROOT="$OPENSCENE_DATA_ROOT/maps"
+export NUPLAN_MAP_VERSION="nuplan-maps-v1.0"
+```
+
+每个运行 Latent WAM 的 shell 都需要设置这些变量。机器相关路径应通过 Hydra 或环境变量传入，不要
+写死在源代码中。
+
+## 克隆与安装
+
+克隆仓库并同时初始化 WorldMirror 子模块：
+
+```bash
+cd "$HOME/latent_wam_workspace"
+git clone --recurse-submodules https://github.com/Jinhsi555/world4drive.git latent-wam
 cd latent-wam
+
 conda env create -f environment.yml
 conda activate latent-wam
 pip install -e .
 ```
 
-完整环境变量和数据集配置见
-[英文安装文档](docs/latent_wam/installation.md)。
-
-## 转换原始 checkpoint
+如果克隆时没有包含子模块，单独执行：
 
 ```bash
-python scripts/convert_latent_wam_checkpoint.py \
-  /path/to/epoch84.ckpt \
-  artifacts/latent-wam/model.safetensors
+git submodule update --init --recursive
 ```
 
-转换结果保留推理权重，但不保留 optimizer state，因此不能作为“完全一致”的训练
-断点恢复。原始 `.ckpt` 仍可由兼容加载器读取。
-
-## NAVSIM 评估
-
-论文报告的是**一阶段 ePDMS**。在原始测试场景上运行一阶段评测脚本：
+无需下载模型权重即可验证安装：
 
 ```bash
+python -c "from navsim.agents.latent_wam.config import LatentWAMConfig; print(LatentWAMConfig())"
+```
+
+命令成功打印配置，说明 Python 包及基础配置依赖安装正确。完整依赖范围见
+[安装说明](docs/latent_wam/installation.md)。
+
+## 准备 NAVSIM 数据
+
+下载数据前请阅读 nuPlan/OpenScene 的数据许可条款。仓库提供的脚本会把文件下载到当前目录，因此应
+在数据根目录运行，再把产物整理成上文目录结构。
+
+### 地图
+
+```bash
+cd "$OPENSCENE_DATA_ROOT"
+bash "$NAVSIM_DEVKIT_ROOT/download/download_maps.sh"
+```
+
+脚本生成 `$OPENSCENE_DATA_ROOT/maps`。
+
+### 训练数据
+
+Hugging Face 脚本下载 NAVSIM `navtrain` 子集，包括当前帧和历史相机数据：
+
+```bash
+cd "$OPENSCENE_DATA_ROOT"
+bash "$NAVSIM_DEVKIT_ROOT/download/download_navtrain_hf.sh"
+
+mkdir -p navsim_logs sensor_blobs
+mv trainval_navsim_logs navsim_logs/trainval
+mv trainval_sensor_blobs/trainval sensor_blobs/trainval
+rmdir trainval_sensor_blobs
+```
+
+如果希望使用四分片 AWS 镜像，可改用 `download/download_navtrain_aws.sh`。完整 trainval 数据可通过
+`download/download_trainval.sh` 下载，但标准 `navtrain` 训练 split 不要求完整 trainval 数据。
+
+### 测试数据
+
+论文的一阶段评估使用原始 NAVSIM test 场景：
+
+```bash
+cd "$OPENSCENE_DATA_ROOT"
+bash "$NAVSIM_DEVKIT_ROOT/download/download_test.sh"
+
+mkdir -p navsim_logs sensor_blobs
+mv test_navsim_logs navsim_logs/test
+mv test_sensor_blobs sensor_blobs/test
+```
+
+完成后检查必要目录：
+
+```bash
+test -d "$OPENSCENE_DATA_ROOT/navsim_logs/trainval"
+test -d "$OPENSCENE_DATA_ROOT/sensor_blobs/trainval"
+test -d "$OPENSCENE_DATA_ROOT/navsim_logs/test"
+test -d "$OPENSCENE_DATA_ROOT/sensor_blobs/test"
+test -d "$NUPLAN_MAPS_ROOT"
+```
+
+## 模型资源
+
+Latent WAM 默认通过 Hugging Face 解析模型标识，也可以通过 Hydra 参数传入本地快照目录。
+
+| 资源 | 默认标识 | 用途 | 状态 |
+| --- | --- | --- | --- |
+| DINOv2-Base | `facebook/dinov2-base` | 推理、缓存生成、训练、评估 | 可公开获取 |
+| WorldMirror | `tencent/HunyuanWorld-Mirror` | 仅用于几何缓存生成 | 使用独立许可证 |
+| Latent WAM | `model.safetensors` | 推理与评估 | 正式 checkpoint 尚未发布 |
+
+离线运行时可以设置本地模型快照：
+
+```bash
+export DINOV2_PATH="$HOME/latent_wam_workspace/models/dinov2-base"
+export WORLD_MIRROR_PATH="$HOME/latent_wam_workspace/models/HunyuanWorld-Mirror"
+export LATENT_WAM_CHECKPOINT="$HOME/latent_wam_workspace/models/model.safetensors"
+```
+
+如果没有设置 `DINOV2_PATH` 或 `WORLD_MIRROR_PATH`，请在后续命令中删除对应的 Hydra override，使用
+默认 Hugging Face 标识。推理和评估不需要 WorldMirror。
+
+## NAVSIM 一阶段评估
+
+这是 Latent WAM 使用的论文评估协议，需要 test split、nuPlan 地图、兼容的 Latent WAM checkpoint
+以及 DINOv2-Base。当前纯代码版本尚不包含正式 checkpoint。
+
+### 1. 生成 NAVSIM metric cache
+
+metric cache 与 Latent WAM checkpoint 无关，只需要生成一次：
+
+```bash
+cd "$NAVSIM_DEVKIT_ROOT"
+python navsim/planning/script/run_metric_caching.py \
+  train_test_split=navtest \
+  metric_cache_path="$NAVSIM_EXP_ROOT/metric_cache"
+```
+
+缓存写入 `$NAVSIM_EXP_ROOT/metric_cache`。相同数据和指标配置的后续评估应复用该缓存。
+
+### 2. 评估 Latent WAM
+
+```bash
+cd "$NAVSIM_DEVKIT_ROOT"
 python navsim/planning/script/run_pdm_score_one_stage.py \
   agent=latent_wam_agent \
-  agent.checkpoint_path=/path/to/model.safetensors \
+  agent.checkpoint_path="$LATENT_WAM_CHECKPOINT" \
+  agent.config.vision.model_id="$DINOV2_PATH" \
   train_test_split=navtest \
+  metric_cache_path="$NAVSIM_EXP_ROOT/metric_cache" \
   experiment_name=latent_wam_eval
 ```
 
-生成的 CSV 中，`average_all_frames` 行的 `score` 是最终一阶段 ePDMS。该评测会计算
-双帧扩展舒适度（two-frame extended comfort），但不评测合成的第二阶段场景。
+如果需要从 Hugging Face 自动获取 DINOv2，请删除
+`agent.config.vision.model_id="$DINOV2_PATH"`。结果写入
+`$NAVSIM_EXP_ROOT/latent_wam_eval/<experiment_uid>/`。生成 CSV 的 `average_all_frames` 行中，`score`
+列即为最终一阶段 ePDMS。
 
-如需评测 NAVSIM v2 的两阶段 ePDMS，则使用：
+## 从头训练 Latent WAM
 
-```bash
-python navsim/planning/script/run_pdm_score.py \
-  agent=latent_wam_agent \
-  agent.checkpoint_path=/path/to/model.safetensors \
-  train_test_split=navhard_two_stage \
-  experiment_name=latent_wam_two_stage_eval
-```
+从头训练不需要正式 Latent WAM checkpoint，但需要 NAVSIM `navtrain` 数据、DINOv2-Base、
+WorldMirror 和 Latent WAM 分片缓存。训练采用 `[-1.5, 0.0, 2.0, 4.0]` 秒四帧 teacher forcing。
 
-两阶段输出中，`extended_pdm_score_combined` 行的 `score` 是最终聚合分数。
+WorldMirror 只在提取几何监督时加载，训练循环和正式推理路径都不会实例化 WorldMirror。
 
-## 缓存与训练
-
-WorldMirror geometry 使用 NAVSIM 提供的相机内外参生成 v2 缓存；相机标定只在
-提取时使用，不会写入缓存。
+### 1. 单 GPU 生成缓存
 
 ```bash
+cd "$NAVSIM_DEVKIT_ROOT"
 python navsim/planning/script/run_latent_wam_caching.py \
   agent=latent_wam_agent \
+  agent.config.vision.model_id="$DINOV2_PATH" \
+  agent.config.geometry.model_id="$WORLD_MIRROR_PATH" \
   train_test_split=navtrain \
-  cache_path=$NAVSIM_EXP_ROOT/latent_wam_cache
+  cache_path="$NAVSIM_EXP_ROOT/latent_wam_cache"
 ```
 
-同一 Python 入口支持多机多卡。建议先做不加载 WorldMirror 的分布式检查：
+可以删除 DINOv2 override 以使用 Hugging Face 标识。WorldMirror 必须解析到包含
+`model.safetensors` 的本地目录，因为权重 checksum 属于严格 cache identity。唯一 NAVSIM frame 被写入
+边界对齐的 image/geometry safetensors shard，sample 通过 Parquet 索引引用四个 frame token。只有
+`$NAVSIM_EXP_ROOT/latent_wam_cache/manifest.json` 发布后，缓存才可用于训练。
+
+中断后重启会校验并复用已完成 shard；只有需要重建全部 shard 时才添加
+`force_cache_computation=true`。旧 sample-level 缓存没有兼容 reader，必须重新生成。详见
+[缓存格式说明](docs/latent_wam/cache-format.md)。
+
+### 2. 可选的分布式缓存生成
+
+首先在不加载 WorldMirror 的情况下，检查所有节点是否看到相同 token 集合：
 
 ```bash
-NNODES=2 NPROC_PER_NODE=8 NODE_RANK=$NODE_RANK \
-MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT \
+cd "$NAVSIM_DEVKIT_ROOT"
+NNODES=2 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
+MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
+DINOV2_PATH="$DINOV2_PATH" WORLD_MIRROR_PATH="$WORLD_MIRROR_PATH" \
 bash scripts/run_dataset_caching_multi_node.sh distributed_dry_run=true
 ```
 
-检查通过后去掉 `distributed_dry_run=true` 即可生成缓存。每个 rank 获得不重叠的
-token 分片；默认跳过有效 v2 缓存，`force_cache_computation=true` 可强制重算。
-最终状态保存在 `$CACHE_PATH/metadata/cache_manifest.json`。
-同一时间只允许一个 `torchrun` 任务写入同一缓存根目录。
+检查通过后，删除 `distributed_dry_run=true` 并再次运行。每个 immutable shard 只有一个 owner rank；
+rank 0 校验、合并 Parquet fragment 并发布最终 manifest。同一缓存根目录同一时间只能运行一个
+`torchrun` 作业。
+
+### 3. 训练
 
 ```bash
+cd "$NAVSIM_DEVKIT_ROOT"
 python navsim/planning/script/run_training.py \
   agent=latent_wam_agent \
   agent.build_target_encoder=true \
+  agent.config.vision.model_id="$DINOV2_PATH" \
+  agent.config.geometry.model_id="$WORLD_MIRROR_PATH" \
   use_cache_without_dataset=true \
   force_cache_computation=false \
-  cache_path=$NAVSIM_EXP_ROOT/latent_wam_cache \
+  cache_path="$NAVSIM_EXP_ROOT/latent_wam_cache" \
   train_test_split=navtrain \
   experiment_name=latent_wam_train
 ```
 
-真实数据的最小完整链路验证见
-[中文 smoke test 文档](docs/latent_wam/smoke-test_zh.md)。该流程只使用一个
-trainval 样本和一个 test scene，覆盖 WorldMirror 缓存、单步优化、EMA、权重重载
-和 PDM 评分。
+删除本地 DINOv2 override 即可使用 `facebook/dinov2-base`。训练产物、Lightning 日志和周期性
+checkpoint 保存在 `$NAVSIM_EXP_ROOT/latent_wam_train/<experiment_uid>/`。target DINO encoder 从
+online encoder 初始化，并在训练中通过 EMA 更新。loss 定义和分布式日志行为见
+[训练说明](docs/latent_wam/training.md)。
 
-## 许可证特别说明
+训练配置中应保留 `agent.config.geometry.model_id="$WORLD_MIRROR_PATH"`。训练不会加载 WorldMirror，
+但启动时会对本地 `model.safetensors` 计算一次 checksum，以拒绝由不同几何权重生成的缓存。
 
-NAVSIM 衍生代码使用 Apache-2.0；`worldmirror` 子模块不是 Apache-2.0，而是
-Tencent HunyuanWorld-Mirror Community License Agreement。该协议包含地域、用途、
-再分发以及“使用输出改进其他 AI 模型”等限制。Latent WAM 权重训练使用了
-WorldMirror feature supervision，因此公开权重前需要法律审核。
+训练默认使用 locality-aware shard shuffle 和每 worker 8-entry shard LRU。设置
+`cache_staging_path=/local/nvme/latent_wam_cache` 可在训练前将共享缓存经 checksum 校验复制到节点本地
+NVMe；设置 `cache_sampler_mode=global` 可运行全局随机吞吐对照。
 
-使用或发布前请阅读 [NOTICE](NOTICE)、
-[第三方许可证说明](THIRD_PARTY_LICENSES.md) 和 `worldmirror/License.txt`。
+## 许可证
+
+NAVSIM 衍生 Python 代码使用 Apache-2.0。`worldmirror` 子模块受 **Tencent HunyuanWorld-Mirror
+Community License Agreement** 约束，该协议包含地域、用途、输出和再分发限制，不属于本仓库
+Apache-2.0 Python 包许可证的覆盖范围。
+
+下载 WorldMirror 权重、生成几何监督、训练或重新分发衍生产物前，请阅读 [NOTICE](NOTICE)、
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) 和 `worldmirror/License.txt`。

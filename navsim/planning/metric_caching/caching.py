@@ -79,7 +79,7 @@ def cache_scenarios(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List
             synthetic_sensor_path=None,
             original_sensor_path=None,
             data_path=Path(cfg.navsim_log_path),
-            synthetic_scenes_path=Path(cfg.synthetic_scenes_path),
+            synthetic_scenes_path=Path(cfg.synthetic_scenes_path) if cfg.synthetic_scenes_path else None,
             scene_filter=scene_filter,
             sensor_config=SensorConfig.build_no_sensors(),
         )
@@ -150,7 +150,7 @@ def cache_data(cfg: DictConfig, worker: WorkerPool) -> None:
         synthetic_sensor_path=None,
         original_sensor_path=None,
         data_path=Path(cfg.navsim_log_path),
-        synthetic_scenes_path=Path(cfg.synthetic_scenes_path),
+        synthetic_scenes_path=Path(cfg.synthetic_scenes_path) if cfg.synthetic_scenes_path else None,
         scene_filter=instantiate(cfg.train_test_split.scene_filter),
         sensor_config=SensorConfig.build_no_sensors(),
     )

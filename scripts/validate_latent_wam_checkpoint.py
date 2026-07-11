@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 from safetensors.torch import load_file
-from transformers import BitImageProcessor, Dinov2Config, Dinov2Model
+from transformers import Dinov2Config, Dinov2Model
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
@@ -32,16 +32,9 @@ def main() -> None:
             image_size=518,
         )
     )
-    processor = BitImageProcessor(
-        do_resize=True,
-        size={"height": 224, "width": 448},
-        do_center_crop=True,
-        crop_size={"height": 224, "width": 448},
-    )
     model = LatentWAMModel(
         LatentWAMConfig(),
         vision_encoder=vision_encoder,
-        image_processor=processor,
         build_target_encoder=False,
     ).to(device)
     model.load_state_dict(load_file(str(args.weights), device=str(device)), strict=True)

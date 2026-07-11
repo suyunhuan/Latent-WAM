@@ -4,84 +4,85 @@ import sys
 
 import pytest
 
-from navsim.agents.latent_wam.distributed_cache import (
-    CacheFailure,
-    DistributedCacheContext,
-    RankCacheSummary,
-    build_cache_manifest,
-    plan_token_shard,
-    token_set_fingerprint,
-)
+from navsim.agents.latent_wam.distributed_cache import DistributedCacheContext, build_frame_cache_plan, plan_shard_ids
 
 
-def test_token_shards_are_contiguous_and_balanced() -> None:
-    tokens = ["echo", "alpha", "delta", "bravo", "charlie"]
+def _frame(token: str, timestamp: int, log_name: str = "log") -> dict:
+    return {
+        "token": token,
+        "timestamp": timestamp,
+        "log_name": log_name,
+        "cams": {
+            name: {"data_path": f"{token}-{name}.jpg", "cam_intrinsic": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]}
+            for name in ("CAM_L0", "CAM_F0", "CAM_R0")
+        },
+        "ego_dynamic_state": [0.0, 0.0, 0.0, 0.0],
+        "driving_command": [1, 0, 0, 0],
+    }
 
-    assert plan_token_shard(tokens, world_size=3, rank=0) == ["alpha", "bravo"]
-    assert plan_token_shard(tokens, world_size=3, rank=1) == ["charlie", "delta"]
-    assert plan_token_shard(tokens, world_size=3, rank=2) == ["echo"]
+
+def _sample(sample_token: str, start: int, shared_current: str | None = None) -> list[dict]:
+    frames = [_frame(f"{sample_token}-frame-{index}", start + index) for index in range(12)]
+    if shared_current is not None:
+        frames[3] = _frame(shared_current, 3)
+    return frames
 
 
-def test_token_shards_allow_more_ranks_than_tokens() -> None:
-    shards = [plan_token_shard(["b", "a"], world_size=4, rank=rank) for rank in range(4)]
+def test_global_plan_deduplicates_frames_and_packs_log_time_order() -> None:
+    scenes = {
+        "sample-b": _sample("sample-b", 100, shared_current="shared"),
+        "sample-a": _sample("sample-a", 0, shared_current="shared"),
+    }
 
-    assert shards == [["a"], ["b"], [], []]
+    plan = build_frame_cache_plan(scenes, frame_indices=(0, 3, 7, 11), frames_per_shard=4)
+
+    assert len(plan.samples) == 2
+    assert len(plan.frames) == 7
+    assert [frame.token for frame in plan.frames] == [
+        "sample-a-frame-0",
+        "shared",
+        "sample-a-frame-7",
+        "sample-a-frame-11",
+        "sample-b-frame-0",
+        "sample-b-frame-7",
+        "sample-b-frame-11",
+    ]
+    assert [(frame.shard_id, frame.row_index) for frame in plan.frames] == [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+    ]
+    assert plan.sources["shared"].sample_token == "sample-a"
+    assert plan.sources["shared"].frame_index == 3
 
 
-def test_token_fingerprint_is_order_independent() -> None:
-    assert token_set_fingerprint(["b", "a"]) == token_set_fingerprint(["a", "b"])
+def test_global_plan_rejects_conflicting_repeated_frame_token() -> None:
+    scenes = {
+        "sample-a": _sample("sample-a", 0, shared_current="shared"),
+        "sample-b": _sample("sample-b", 100, shared_current="shared"),
+    }
+    scenes["sample-b"][3]["timestamp"] = 999
+
+    with pytest.raises(ValueError, match="conflicting source data"):
+        build_frame_cache_plan(scenes, frame_indices=(0, 3, 7, 11), frames_per_shard=64)
+
+
+def test_shard_ownership_is_balanced_and_deterministic() -> None:
+    assert plan_shard_ids(num_shards=5, world_size=2, rank=0) == [0, 2, 4]
+    assert plan_shard_ids(num_shards=5, world_size=2, rank=1) == [1, 3]
 
 
 def test_distributed_context_reads_torchrun_environment() -> None:
     context = DistributedCacheContext.from_environment(
-        {
-            "RANK": "3",
-            "LOCAL_RANK": "1",
-            "WORLD_SIZE": "8",
-            "LATENT_WAM_DIST_BACKEND": "gloo",
-        },
+        {"RANK": "3", "LOCAL_RANK": "1", "WORLD_SIZE": "8", "LATENT_WAM_DIST_BACKEND": "gloo"},
         cuda_available=False,
     )
 
-    assert context.rank == 3
-    assert context.local_rank == 1
-    assert context.world_size == 8
-    assert context.backend == "gloo"
-    assert context.is_distributed
-
-
-def test_single_process_context_defaults_to_gloo_without_cuda() -> None:
-    context = DistributedCacheContext.from_environment({}, cuda_available=False)
-
-    assert context.rank == 0
-    assert context.local_rank == 0
-    assert context.world_size == 1
-    assert context.backend == "gloo"
-    assert not context.is_distributed
-
-
-def test_cache_manifest_aggregates_rank_results_and_failures() -> None:
-    manifest = build_cache_manifest(
-        summaries=[
-            RankCacheSummary(rank=0, assigned=3, succeeded=2, skipped=1),
-            RankCacheSummary(
-                rank=1,
-                assigned=2,
-                succeeded=1,
-                failures=(CacheFailure(token="bad", log_name="log", error="broken"),),
-            ),
-        ],
-        total_tokens=5,
-        world_size=2,
-        dry_run=False,
-    )
-
-    assert manifest["status"] == "failed"
-    assert manifest["assigned"] == 5
-    assert manifest["succeeded"] == 3
-    assert manifest["skipped"] == 1
-    assert manifest["failed"] == 1
-    assert manifest["failures"] == [{"token": "bad", "log_name": "log", "error": "broken"}]
+    assert (context.rank, context.local_rank, context.world_size, context.backend) == (3, 1, 8, "gloo")
 
 
 @pytest.mark.skipif(
@@ -111,4 +112,4 @@ def test_two_process_gloo_coordination_smoke() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert '"status": "dry_run"' in result.stdout
+    assert '"world_size": 2' in result.stdout

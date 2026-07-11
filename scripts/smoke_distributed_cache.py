@@ -2,32 +2,17 @@
 
 import json
 
-from navsim.agents.latent_wam.distributed_cache import (
-    DistributedCacheContext,
-    RankCacheSummary,
-    build_cache_manifest,
-    canonical_tokens,
-    plan_token_shard,
-)
+from navsim.agents.latent_wam.distributed_cache import DistributedCacheContext, plan_shard_ids
 
 
 def main() -> None:
-    """Verify process-group setup, token agreement, sharding, and summary gathering."""
+    """Verify process-group setup, shard ownership, and object gathering."""
     context = DistributedCacheContext.from_environment(cuda_available=False)
-    tokens = canonical_tokens(["echo", "alpha", "delta", "bravo", "charlie"])
     with context.activate():
-        context.verify_token_set(tokens)
-        shard = plan_token_shard(tokens, context.world_size, context.rank)
-        summary = RankCacheSummary(rank=context.rank, assigned=len(shard))
-        summaries = context.all_gather_object(summary)
-        manifest = build_cache_manifest(
-            summaries=summaries,
-            total_tokens=len(tokens),
-            world_size=context.world_size,
-            dry_run=True,
-        )
+        owned_shards = plan_shard_ids(5, context.world_size, context.rank)
+        ranks = context.all_gather_object({"rank": context.rank, "shards": owned_shards})
         if context.rank == 0:
-            print(json.dumps(manifest, indent=2))
+            print(json.dumps({"world_size": context.world_size, "ranks": ranks}, indent=2))
         context.barrier()
 
 

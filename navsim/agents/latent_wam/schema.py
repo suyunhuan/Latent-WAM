@@ -1,9 +1,8 @@
-"""Canonical names and version for the public Latent WAM cache schema."""
+"""Canonical identifiers for the only supported Latent WAM cache format."""
 
-CACHE_SCHEMA_VERSION = 2
-CACHE_GENERATION_KEY = "cache_generation"
-PUBLIC_GEOMETRY_TOKEN_COUNT = 519
-PUBLIC_FEATURE_KEY = f"latent_wam_features_v{CACHE_SCHEMA_VERSION}"
-PUBLIC_TARGET_KEY = f"latent_wam_targets_v{CACHE_SCHEMA_VERSION}"
-PUBLIC_FEATURE_NAME = f"{PUBLIC_FEATURE_KEY}.gz"
-PUBLIC_TARGET_NAME = f"{PUBLIC_TARGET_KEY}.gz"
+from navsim.agents.latent_wam.cache import CACHE_FORMAT, SCHEMA_REVISION
+
+FEATURE_KEY = "latent_wam_features"
+TARGET_KEY = "latent_wam_targets"
+
+__all__ = ["CACHE_FORMAT", "SCHEMA_REVISION", "FEATURE_KEY", "TARGET_KEY"]

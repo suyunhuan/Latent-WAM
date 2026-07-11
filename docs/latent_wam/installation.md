@@ -59,18 +59,5 @@ WorldMirror's own environment instructions, including a platform-compatible
 gsplat build.
 
 Hardware-vendor PyTorch builds must use the wheel matrix supplied by that
-vendor. Such a local environment is useful for smoke testing but does not
-replace the supported Python 3.10/NVIDIA release environment.
-
-On the Aliyun PPU host image used for the verified fixture, create a project
-overlay without replacing its hardware-matched torch build:
-
-```bash
-bash scripts/setup_ppu_smoke_env.sh
-source .venv-ppu-smoke/bin/activate
-```
-
-This venv inherits the host image's site-packages to retain its vendor binary
-stack, then installs the pinned NAVSIM/PDM overlay from
-`requirements-ppu-smoke.txt` using the current Aliyun pip index. It is a
-reproducible PPU smoke environment, not a portable release environment.
+vendor. Such local environments are outside the supported Python 3.10/NVIDIA
+release environment.

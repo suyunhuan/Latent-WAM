@@ -1,13 +1,13 @@
 """Latent WAM model implementation."""
 
 import copy
-from typing import Any, Mapping, Optional, Tuple
+from typing import Mapping, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoImageProcessor, AutoModel
+from transformers import AutoModel
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
 from transformers.models.dinov2 import Dinov2Model
 
@@ -15,6 +15,7 @@ from navsim.agents.latent_wam.cache import LatentWAMFeatures
 from navsim.agents.latent_wam.config import LatentWAMConfig
 from navsim.agents.latent_wam.modules.temporal_world_model import TemporalWorldModel
 from navsim.agents.latent_wam.outputs import LossDict, TrainingOutput, TrajectoryPrediction
+from navsim.agents.latent_wam.preprocessing import DINO_CROP_SIZE, normalize_dino_images
 from navsim.common.enums import StateSE2Index
 
 
@@ -82,7 +83,6 @@ class LatentWAMModel(nn.Module):
     Args:
         config: Validated model and data configuration.
         vision_encoder: Optional injected DINOv2 encoder for offline tests.
-        image_processor: Optional injected Hugging Face image processor.
         build_target_encoder: Build the EMA target encoder required for training.
     """
 
@@ -90,7 +90,6 @@ class LatentWAMModel(nn.Module):
         self,
         config: LatentWAMConfig,
         vision_encoder: Optional[Dinov2Model] = None,
-        image_processor: Optional[Any] = None,
         build_target_encoder: bool = False,
     ) -> None:
         super().__init__()
@@ -110,11 +109,6 @@ class LatentWAMModel(nn.Module):
             * 1e-6
         )
         self.vision_encoder = vision_encoder or AutoModel.from_pretrained(config.vision.model_id)
-        self.image_processor = image_processor or AutoImageProcessor.from_pretrained(config.vision.model_id)
-        self.image_processor.crop_size = {
-            "height": config.vision.crop_height,
-            "width": config.vision.crop_width,
-        }
         self.target_dino_encoder: Optional[Dinov2Model]
         if build_target_encoder:
             self.target_dino_encoder = copy.deepcopy(self.vision_encoder)
@@ -166,18 +160,11 @@ class LatentWAMModel(nn.Module):
         self.ego_status_decoder = EgoStatusHead(config)
 
     def _preprocess_images(self, images: torch.Tensor) -> torch.Tensor:
-        """Convert uint8 channel-last images to DINO pixel values."""
-        batch_size, num_frames, num_views, height, width, channels = images.shape
-        flat_images = images.reshape(batch_size * num_frames * num_views, height, width, channels)
-        inputs = self.image_processor(images=flat_images, return_tensors="pt")
-        pixel_values = inputs.pixel_values.to(self.scene_embeds.device)
-        return pixel_values.reshape(
-            batch_size,
-            num_frames,
-            num_views,
-            channels,
-            *pixel_values.shape[-2:],
-        )
+        """Transfer cached uint8 images and normalize them on the model device."""
+        if images.shape[-3:-1] != DINO_CROP_SIZE:
+            raise ValueError(f"model images must already be cropped to {DINO_CROP_SIZE}")
+        images = images.to(self.scene_embeds.device, non_blocking=True)
+        return normalize_dino_images(images)
 
     def _encode_with_scene_queries(
         self,

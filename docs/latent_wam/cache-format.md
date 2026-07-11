@@ -1,67 +1,115 @@
 # Cache format
 
-## Version 2
+Latent WAM uses one frame-deduplicated, immutable sharded cache format. There
+is no compatibility reader or converter for older sample-level caches;
+regenerate them with the current caching command.
 
-Each sample directory contains:
+## Layout
 
-- `latent_wam_features_v2.gz`
-- `latent_wam_targets_v2.gz`
+```text
+cache/
+├── manifest.json
+├── schema.json
+├── meta/
+│   ├── frames.parquet
+│   ├── samples.parquet
+│   ├── partial/
+│   └── shards/
+├── images/
+│   └── shard-000000.safetensors
+└── geometry/
+    └── shard-000000.safetensors
+```
 
-The feature file stores:
+`manifest.json` is published last. A cache without a complete final manifest
+is never accepted for training. The manifest format identifier is
+`latent_wam_sharded_cache`; its initial internal schema revision is `1`.
 
-| Field | Shape | Meaning |
-| --- | --- | --- |
-| `images` | `[4, 3, H, W, 3]` | uint8 RGB frames |
-| `geometry` | `[4, 3, 519, 2048]` | WorldMirror tokens |
-| `ego_status` | `[4, 8]` | command, velocity, acceleration |
-| `schema_version` | scalar | currently `2` |
-| `cache_generation` | string | transaction identifier shared with the target |
+## Frame store
 
-The temporal offsets are `[-1.5, 0.0, 2.0, 4.0]` seconds. Geometry patch
-tokens start at index 7; the remaining 512 tokens align with DINO patches.
+Every unique NAVSIM frame token occurs exactly once in `frames.parquet`. A row
+maps the token to a shard ID and row index and retains its log name and
+timestamp. Image and geometry shards use identical frame membership and row
+ordering.
 
-WorldMirror extraction uses the original camera-conditioned path. Images are
-resized by their shortest edge to 256 pixels, center-cropped to `448x224`, and
-rescaled without ImageNet normalization. Camera intrinsics are adjusted for the
-same resize/crop, `sensor2lidar` poses are inverted to world-to-camera matrices,
-and pose/ray priors are enabled with condition flags `[1, 0, 1]`. Calibration is
-required while generating a cache but is not stored in the cache.
+Each image shard contains:
 
-The earlier public version 1 used image-only WorldMirror extraction and is not
-supported. Regenerate it with the current caching command.
+| Tensor | Shape | Dtype | Meaning |
+| --- | --- | --- | --- |
+| `images` | `[N, 3, 224, 448, 3]` | `uint8` | left/front/right RGB images after resize and center crop |
 
-## Legacy adapter
+Each geometry shard contains:
 
-The adapter reads the original `transfuser_feature.gz`, resolves its four frame
-tokens through `<cache>/feature_cache/<token>/<token>.gz`, and loads each
-`geometry_feature.npy`. Legacy files use gzip-pickle and must only be loaded
-from trusted sources. Exact scene-token matching is not required by the
-structural compatibility test, but tensor ranks and temporal field names are.
-The legacy adapter does not recompute geometry and therefore preserves the
-original cached supervision exactly.
+| Tensor | Shape | Dtype | Meaning |
+| --- | --- | --- | --- |
+| `geometry` | `[N, 3, 519, 2048]` | `float32` | WorldMirror camera-conditioned tokens |
+| `ego_status` | `[N, 8]` | `float32` | command, velocity, and acceleration |
 
-## Distributed generation
+Shards contain at most 64 frames by default. Frames are ordered by log,
+timestamp, and token before packing. This preserves strict global frame
+deduplication while making the four frames of most samples fall in one shard
+or two adjacent shards.
 
-`run_latent_wam_caching.py` uses a single process when invoked with `python` and
-automatically enables distributed sharding under `torchrun`. All ranks sort the
-same token set, compare its count and SHA-256 fingerprint, and then take
-contiguous balanced shards. No DDP model synchronization is needed: every rank
-loads one independent WorldMirror encoder only when it has uncached work.
+Images are resized to `455x256` with antialiased bicubic interpolation and
+center-cropped to `448x224` before being stored. Training therefore performs
+only channel-layout conversion, rescaling, and DINO normalization on the
+accelerator. Online inference uses the same resize/crop function.
 
-Valid feature/target pairs are fully loaded and validated before being skipped.
-New pairs are written to rank/PID-specific temporary files, reloaded for
-validation, and published with atomic file replacement. Feature and target
-payloads share a generation identifier, so interruption between the two
-replacements leaves an invalid pair that the next run rebuilds. A failed token
-is recorded while the rank continues its remaining shard; the overall command
-exits non-zero after all ranks finish if any token failed.
+WorldMirror geometry uses adjusted intrinsics, inverted `sensor2lidar`
+extrinsics, and condition flags `[1, 0, 1]`. Geometry patch tokens start at
+index 7; the remaining 512 tokens align with DINO patches.
 
-Hydra logs are isolated under `metadata/rank_<rank>/`. Rank zero writes
-`metadata/cache_manifest.json` with per-rank counts and failed token details.
-Use `distributed_dry_run=true` to verify data visibility, token agreement, and
-sharding without loading model weights. `LATENT_WAM_DIST_BACKEND` overrides the
-default NCCL backend (Gloo when CUDA is unavailable).
+## Sample index
 
-Run only one `torchrun` job against a cache root at a time. Independent jobs
-sharing the same root are unsupported because rank sharding and the final
-manifest are coordinated only within one process group.
+`samples.parquet` stores one row per training sample:
+
+- sample token and log name;
+- four frame tokens at `[-1.5, 0.0, 2.0, 4.0]` seconds;
+- the float32 `[8, 3]` future trajectory.
+
+The dataset resolves the four tokens through `frames.parquet` and reconstructs
+the existing model input API. Samples do not duplicate image, geometry, or ego
+status tensors.
+
+## Integrity and identity
+
+The manifest records sizes, shapes, dtypes, and SHA-256 checksums for every
+Parquet and safetensors file. It also records a semantic fingerprint covering
+the NAVSIM split and selected samples, logs, temporal/camera configuration,
+image preprocessing revision, WorldMirror weight checksum, patch layout, and
+geometry dtype/shape.
+
+Cache generation and node-local staging perform full checksum validation.
+Ordinary training startup checks the manifest, file presence, sizes, and
+safetensors/Parquet structure without rescanning every shard checksum.
+
+## Distributed generation and resume
+
+All ranks independently build and compare the same global frame plan. Each
+immutable shard has exactly one owner rank. Ranks write their own Parquet index
+fragments; rank zero validates and merges all fragments, then atomically
+publishes the final manifest.
+
+Every completed shard has a sidecar under `meta/shards/`. The sidecar is bound
+to the complete semantic fingerprint, so preprocessing or WorldMirror changes
+cannot reuse old tensors. A restarted job validates sidecars and checksums and rebuilds only missing or invalid shards.
+`extraction_batch_frames` controls how many frames are passed to WorldMirror at
+once and defaults to the conservative value `1`; it is independent of the
+64-frame storage shard size.
+
+Use `distributed_dry_run=true` to verify source visibility and the cross-rank
+global plan without loading WorldMirror. Run only one coordinated `torchrun`
+job against a cache root at a time.
+
+## Training locality and optional staging
+
+Training uses locality-aware block shuffle by default: shard-local sample
+buckets and their contents are shuffled deterministically before balanced DDP
+distribution. Set `cache_sampler_mode=global` for the comparison mode. Each
+DataLoader worker keeps a small shard LRU; configure it with
+`cache_shard_lru`.
+
+The shared cache is always directly usable. Set `cache_staging_path` during
+training to copy the complete cache to node-local NVMe. Staging is protected by
+a local file lock, verifies every checksum, and publishes the local manifest
+last.

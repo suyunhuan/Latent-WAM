@@ -8,7 +8,6 @@ import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from navsim.agents.abstract_agent import AbstractAgent
-from navsim.agents.latent_wam.checkpoint import load_legacy_checkpoint, migrate_state_dict
 from navsim.agents.latent_wam.config import LatentWAMConfig
 from navsim.agents.latent_wam.features import (
     CURRENT_FRAME_INDEX,
@@ -47,19 +46,17 @@ class LatentWAMAgent(AbstractAgent):
         return build_camera_sensor_config([CURRENT_FRAME_INDEX])
 
     def initialize(self) -> None:
-        """Load either legacy Lightning or public safetensors weights."""
+        """Strictly load a released safetensors checkpoint when configured."""
         if not self.checkpoint_path:
             return
         checkpoint_path = Path(self.checkpoint_path)
-        if checkpoint_path.suffix == ".safetensors":
-            try:
-                from safetensors.torch import load_file
-            except ImportError as error:
-                raise RuntimeError("install safetensors to load released weights") from error
-            state_dict = load_file(str(checkpoint_path), device="cpu")
-        else:
-            legacy = load_legacy_checkpoint(checkpoint_path)
-            state_dict, _ = migrate_state_dict(legacy)
+        if checkpoint_path.suffix != ".safetensors":
+            raise ValueError("Latent WAM checkpoints must use the released .safetensors format")
+        try:
+            from safetensors.torch import load_file
+        except ImportError as error:
+            raise RuntimeError("install safetensors to load released weights") from error
+        state_dict = load_file(str(checkpoint_path), device="cpu")
         incompatible = self.model.load_state_dict(state_dict, strict=False)
         missing_keys = list(incompatible.missing_keys)
         if self.model.target_dino_encoder is not None:

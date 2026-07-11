@@ -24,11 +24,6 @@ def test_transformer_dimension_validation() -> None:
         LatentWAMConfig(transformer=TransformerConfig(model_dim=255, num_heads=8))
 
 
-def test_public_v1_schema_is_rejected() -> None:
-    with pytest.raises(ValueError, match="schema version 2"):
-        DataConfig(schema_version=1)
-
-
 def test_hydra_config_builds_typed_config() -> None:
     hydra_config = OmegaConf.load("navsim/planning/script/config/common/agent/latent_wam_agent.yaml")
 

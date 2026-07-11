@@ -1,36 +1,196 @@
-"""Distributed coordination primitives for Latent WAM cache generation."""
+"""Global planning and distributed coordination for sharded cache generation."""
+
+from __future__ import annotations
 
 import hashlib
 import json
 import os
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True)
-class CacheFailure:
-    """Failure details for one cache token."""
+class FrameSource:
+    """Canonical sample location from which one unique frame is loaded."""
+
+    sample_token: str
+    frame_index: int
+
+
+@dataclass(frozen=True)
+class PlannedFrame:
+    """Globally unique frame and its immutable shard row."""
 
     token: str
     log_name: str
-    error: str
+    timestamp: int
+    shard_id: int
+    row_index: int
 
 
 @dataclass(frozen=True)
-class RankCacheSummary:
-    """Cache outcome counts produced by one rank."""
+class PlannedSample:
+    """Training sample expressed as four references into the frame store."""
 
-    rank: int
-    assigned: int
-    succeeded: int = 0
-    skipped: int = 0
-    failures: Tuple[CacheFailure, ...] = ()
+    token: str
+    log_name: str
+    frame_tokens: Tuple[str, str, str, str]
+
+
+@dataclass(frozen=True)
+class FrameCachePlan:
+    """Deterministic global cache plan computed independently by every rank."""
+
+    frames: Tuple[PlannedFrame, ...]
+    samples: Tuple[PlannedSample, ...]
+    sources: Mapping[str, FrameSource]
+    frames_per_shard: int
+
+    @property
+    def num_shards(self) -> int:
+        """Number of immutable frame shards in this plan."""
+        return 0 if not self.frames else self.frames[-1].shard_id + 1
+
+    def fingerprint(self) -> str:
+        """Return a cross-rank comparable digest of all planned identities."""
+        payload = {
+            "frames": [frame.__dict__ for frame in self.frames],
+            "samples": [sample.__dict__ for sample in self.samples],
+            "sources": {token: source.__dict__ for token, source in sorted(self.sources.items())},
+            "frames_per_shard": self.frames_per_shard,
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if hasattr(value, "tolist"):
+        return _json_value(value.tolist())
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
+def _frame_semantic_digest(frame: Mapping[str, Any]) -> str:
+    cameras = frame.get("cams", frame.get("camera_dict", {}))
+    relevant = {
+        "token": frame.get("token"),
+        "timestamp": frame.get("timestamp"),
+        "log_name": frame.get("log_name"),
+        "cams": cameras,
+        "ego2global_translation": frame.get("ego2global_translation"),
+        "ego2global_rotation": frame.get("ego2global_rotation"),
+        "ego_dynamic_state": frame.get("ego_dynamic_state"),
+        "driving_command": frame.get("driving_command"),
+    }
+    payload = json.dumps(_json_value(relevant), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def build_frame_cache_plan(
+    scenes: Mapping[str, Sequence[Mapping[str, Any]]],
+    frame_indices: Sequence[int],
+    frames_per_shard: int,
+) -> FrameCachePlan:
+    """Deduplicate selected frames and assign temporal shards.
+
+    Args:
+        scenes: Raw NAVSIM frame dictionaries keyed by sample token.
+        frame_indices: Four required temporal indices.
+        frames_per_shard: Maximum physical rows per shard.
+
+    Returns:
+        Deterministic global frame/sample/source plan.
+
+    Raises:
+        ValueError: If frames are missing, conflicting, or parameters are invalid.
+    """
+    if tuple(frame_indices) != (0, 3, 7, 11):
+        raise ValueError("Latent WAM cache frames must use indices (0,3,7,11)")
+    if frames_per_shard < 1:
+        raise ValueError("frames_per_shard must be positive")
+    sources: Dict[str, FrameSource] = {}
+    frame_metadata: Dict[str, Tuple[str, int]] = {}
+    frame_digests: Dict[str, str] = {}
+    samples: List[PlannedSample] = []
+    for sample_token in sorted(scenes):
+        scene_frames = scenes[sample_token]
+        if len(scene_frames) <= max(frame_indices):
+            raise ValueError(f"sample {sample_token} does not contain all required frame indices")
+        selected_tokens = []
+        for frame_index in frame_indices:
+            frame = scene_frames[frame_index]
+            frame_token = str(frame["token"])
+            log_name = str(frame["log_name"])
+            timestamp = int(frame["timestamp"])
+            digest = _frame_semantic_digest(frame)
+            if frame_token in frame_digests and frame_digests[frame_token] != digest:
+                raise ValueError(f"frame token {frame_token} has conflicting source data")
+            frame_digests.setdefault(frame_token, digest)
+            frame_metadata.setdefault(frame_token, (log_name, timestamp))
+            candidate = FrameSource(sample_token=sample_token, frame_index=frame_index)
+            previous = sources.get(frame_token)
+            if previous is None or (candidate.sample_token, candidate.frame_index) < (
+                previous.sample_token,
+                previous.frame_index,
+            ):
+                sources[frame_token] = candidate
+            selected_tokens.append(frame_token)
+        samples.append(
+            PlannedSample(
+                token=sample_token,
+                log_name=str(scene_frames[frame_indices[1]]["log_name"]),
+                frame_tokens=tuple(selected_tokens),
+            )
+        )
+    ordered_tokens = sorted(frame_metadata, key=lambda token: (*frame_metadata[token], token))
+    frames = tuple(
+        PlannedFrame(
+            token=token,
+            log_name=frame_metadata[token][0],
+            timestamp=frame_metadata[token][1],
+            shard_id=index // frames_per_shard,
+            row_index=index % frames_per_shard,
+        )
+        for index, token in enumerate(ordered_tokens)
+    )
+    return FrameCachePlan(
+        frames=frames,
+        samples=tuple(samples),
+        sources=sources,
+        frames_per_shard=frames_per_shard,
+    )
+
+
+def plan_shard_ids(num_shards: int, world_size: int, rank: int) -> List[int]:
+    """Assign immutable shards using round-robin ownership.
+
+    Args:
+        num_shards: Total number of shards.
+        world_size: Number of owner ranks.
+        rank: Current global rank.
+
+    Returns:
+        Shard IDs owned by the rank.
+
+    Raises:
+        ValueError: If counts or rank are invalid.
+    """
+    if num_shards < 0 or world_size < 1 or rank < 0 or rank >= world_size:
+        raise ValueError("invalid shard ownership inputs")
+    return list(range(rank, num_shards, world_size))
 
 
 @dataclass(frozen=True)
 class DistributedCacheContext:
-    """Rank and backend configuration for one cache process."""
+    """Torchrun rank and process-group lifecycle for cache generation."""
 
     rank: int
     local_rank: int
@@ -44,17 +204,17 @@ class DistributedCacheContext:
         environment: Optional[Mapping[str, str]] = None,
         cuda_available: Optional[bool] = None,
     ) -> "DistributedCacheContext":
-        """Build a context from torchrun-compatible environment variables.
+        """Build a context from torchrun environment variables.
 
         Args:
-            environment: Optional environment mapping used instead of ``os.environ``.
-            cuda_available: Optional CUDA availability override, primarily for tests.
+            environment: Optional environment mapping for tests.
+            cuda_available: Optional accelerator availability override.
 
         Returns:
-            Parsed rank, world-size, and process-group backend configuration.
+            Parsed distributed cache context.
 
         Raises:
-            ValueError: If the rank-related environment values are inconsistent.
+            ValueError: If rank variables are inconsistent.
         """
         values = os.environ if environment is None else environment
         if cuda_available is None:
@@ -64,207 +224,98 @@ class DistributedCacheContext:
         world_size = int(values.get("WORLD_SIZE", "1"))
         rank = int(values.get("RANK", "0"))
         local_rank = int(values.get("LOCAL_RANK", "0"))
-        backend = values.get("LATENT_WAM_DIST_BACKEND", "nccl" if cuda_available else "gloo")
-        if world_size < 1:
-            raise ValueError("WORLD_SIZE must be positive")
-        if rank < 0 or rank >= world_size:
-            raise ValueError("RANK must be in [0, WORLD_SIZE)")
-        if local_rank < 0:
-            raise ValueError("LOCAL_RANK must be non-negative")
+        if world_size < 1 or rank < 0 or rank >= world_size or local_rank < 0:
+            raise ValueError("invalid torchrun rank environment")
         return cls(
             rank=rank,
             local_rank=local_rank,
             world_size=world_size,
-            backend=backend,
+            backend=values.get("LATENT_WAM_DIST_BACKEND", "nccl" if cuda_available else "gloo"),
             cuda_available=cuda_available,
         )
 
     @property
     def is_distributed(self) -> bool:
-        """Whether this process belongs to a multi-process cache job."""
         return self.world_size > 1
 
     @contextmanager
     def activate(self) -> Iterator[None]:
-        """Initialize and finally destroy a process group owned by this context.
+        """Activate and, when owned, destroy the process group.
 
         Yields:
-            Control after any required process group has been initialized.
-
-        Raises:
-            ValueError: If an existing process group does not match this context.
+            Control while the matching process group is active.
         """
         if not self.is_distributed:
+            if self.cuda_available:
+                import torch
+
+                torch.cuda.set_device(self.local_rank)
             yield
             return
         import torch
         import torch.distributed as dist
 
-        owns_process_group = not dist.is_initialized()
-        if owns_process_group:
+        owns_group = not dist.is_initialized()
+        if owns_group:
             if self.cuda_available:
                 torch.cuda.set_device(self.local_rank)
-            dist.init_process_group(
-                backend=self.backend,
-                rank=self.rank,
-                world_size=self.world_size,
-            )
-        elif dist.get_rank() != self.rank or dist.get_world_size() != self.world_size:
-            raise ValueError("existing process group does not match the cache environment")
+            dist.init_process_group(self.backend, rank=self.rank, world_size=self.world_size)
         try:
             yield
         finally:
-            if owns_process_group and dist.is_initialized():
+            if owns_group and dist.is_initialized():
                 dist.destroy_process_group()
 
-    def verify_token_set(self, tokens: Iterable[str]) -> None:
-        """Fail on every rank unless all processes see the same token set.
-
-        Args:
-            tokens: Scene tokens visible to this rank.
-
-        Raises:
-            ValueError: If ranks see different token counts or fingerprints.
-        """
-        canonical = canonical_tokens(tokens)
-        local_signature = (len(canonical), token_set_fingerprint(canonical))
-        signatures = self.all_gather_object(local_signature)
-        if any(signature != local_signature for signature in signatures):
-            raise ValueError(f"cache token sets differ across ranks: {signatures}")
-
     def all_gather_object(self, value: Any) -> List[Any]:
-        """Gather a Python value from every rank, or wrap it for one process.
+        """Gather a Python value from every rank.
 
         Args:
-            value: Pickle-compatible value produced by the current rank.
+            value: Pickle-compatible local value.
 
         Returns:
-            Values ordered by rank.
+            Values ordered by global rank.
         """
         if not self.is_distributed:
             return [value]
         import torch.distributed as dist
 
-        gathered: List[Any] = [None] * self.world_size
+        gathered = [None] * self.world_size
         dist.all_gather_object(gathered, value)
         return gathered
 
+    def verify_plan(self, plan: FrameCachePlan) -> None:
+        """Require every rank to hold the same global plan.
+
+        Args:
+            plan: Locally computed cache plan.
+
+        Raises:
+            ValueError: If rank fingerprints differ.
+        """
+        signatures = self.all_gather_object(plan.fingerprint())
+        if any(signature != signatures[0] for signature in signatures):
+            raise ValueError(f"cache plans differ across ranks: {signatures}")
+
+    def broadcast_object(self, value: Any, source_rank: int = 0) -> Any:
+        """Broadcast one small Python object.
+
+        Args:
+            value: Source value, or a placeholder on other ranks.
+            source_rank: Broadcasting rank.
+
+        Returns:
+            Broadcast value on every rank.
+        """
+        if not self.is_distributed:
+            return value
+        import torch.distributed as dist
+
+        values = [value if self.rank == source_rank else None]
+        dist.broadcast_object_list(values, src=source_rank)
+        return values[0]
+
     def barrier(self) -> None:
-        """Synchronize distributed cache ranks when a process group is active."""
         if self.is_distributed:
             import torch.distributed as dist
 
             dist.barrier()
-
-
-def canonical_tokens(tokens: Iterable[str]) -> List[str]:
-    """Return a sorted token list and reject duplicate identifiers.
-
-    Args:
-        tokens: Scene token identifiers.
-
-    Returns:
-        Lexicographically sorted identifiers.
-
-    Raises:
-        ValueError: If an identifier occurs more than once.
-    """
-    canonical = sorted(tokens)
-    if len(canonical) != len(set(canonical)):
-        raise ValueError("cache token list contains duplicate identifiers")
-    return canonical
-
-
-def token_set_fingerprint(tokens: Iterable[str]) -> str:
-    """Compute an order-independent SHA-256 fingerprint for cache tokens.
-
-    Args:
-        tokens: Scene token identifiers.
-
-    Returns:
-        Hexadecimal SHA-256 digest of the canonical token list.
-    """
-    payload = json.dumps(canonical_tokens(tokens), separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def plan_token_shard(tokens: Iterable[str], world_size: int, rank: int) -> List[str]:
-    """Return the contiguous balanced token shard assigned to one rank.
-
-    Args:
-        tokens: Complete scene token collection.
-        world_size: Number of cache workers.
-        rank: Worker rank in ``[0, world_size)``.
-
-    Returns:
-        This rank's deterministic contiguous shard.
-
-    Raises:
-        ValueError: If ``world_size`` or ``rank`` is invalid.
-    """
-    if world_size < 1:
-        raise ValueError("world_size must be positive")
-    if rank < 0 or rank >= world_size:
-        raise ValueError("rank must be in [0, world_size)")
-    canonical = canonical_tokens(tokens)
-    shard_size, remainder = divmod(len(canonical), world_size)
-    begin = rank * shard_size + min(rank, remainder)
-    end = begin + shard_size + int(rank < remainder)
-    return canonical[begin:end]
-
-
-def build_cache_manifest(
-    summaries: Sequence[RankCacheSummary],
-    total_tokens: int,
-    world_size: int,
-    dry_run: bool,
-) -> Dict[str, Any]:
-    """Validate rank summaries and build the final cache manifest.
-
-    Args:
-        summaries: One complete outcome summary per rank.
-        total_tokens: Number of tokens in the verified global token set.
-        world_size: Number of cache workers.
-        dry_run: Whether workers only verified distributed coordination.
-
-    Returns:
-        JSON-serializable aggregate and per-rank counts.
-
-    Raises:
-        ValueError: If summaries are incomplete or do not account for all tokens.
-    """
-    if len(summaries) != world_size or {summary.rank for summary in summaries} != set(range(world_size)):
-        raise ValueError("cache summaries must contain every rank exactly once")
-    assigned = sum(summary.assigned for summary in summaries)
-    if assigned != total_tokens:
-        raise ValueError("cache summaries do not cover the complete token set")
-    if not dry_run:
-        for summary in summaries:
-            processed = summary.succeeded + summary.skipped + len(summary.failures)
-            if processed != summary.assigned:
-                raise ValueError(f"rank {summary.rank} did not account for every assigned token")
-    failures = [asdict(failure) for summary in summaries for failure in summary.failures]
-    succeeded = sum(summary.succeeded for summary in summaries)
-    skipped = sum(summary.skipped for summary in summaries)
-    status = "dry_run" if dry_run else ("failed" if failures else "complete")
-    return {
-        "status": status,
-        "dry_run": dry_run,
-        "world_size": world_size,
-        "total_tokens": total_tokens,
-        "assigned": assigned,
-        "succeeded": succeeded,
-        "skipped": skipped,
-        "failed": len(failures),
-        "failures": failures,
-        "ranks": [
-            {
-                "rank": summary.rank,
-                "assigned": summary.assigned,
-                "succeeded": summary.succeeded,
-                "skipped": summary.skipped,
-                "failed": len(summary.failures),
-            }
-            for summary in sorted(summaries, key=lambda item: item.rank)
-        ],
-    }

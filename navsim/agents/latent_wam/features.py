@@ -6,7 +6,8 @@ import numpy as np
 import torch
 
 from navsim.agents.latent_wam.config import LatentWAMConfig
-from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_KEY, PUBLIC_TARGET_KEY
+from navsim.agents.latent_wam.preprocessing import preprocess_camera_images
+from navsim.agents.latent_wam.schema import FEATURE_KEY, TARGET_KEY
 from navsim.common.dataclasses import AgentInput, Scene, SensorConfig
 from navsim.planning.training.abstract_feature_target_builder import AbstractFeatureBuilder, AbstractTargetBuilder
 
@@ -63,13 +64,13 @@ class LatentWAMFeatureBuilder(AbstractFeatureBuilder):
         self.config = config
 
     def get_unique_name(self) -> str:
-        return PUBLIC_FEATURE_KEY
+        return FEATURE_KEY
 
     def compute_features(self, agent_input: AgentInput) -> Dict[str, torch.Tensor]:
         if len(agent_input.cameras) <= CURRENT_FRAME_INDEX:
             raise ValueError("Latent WAM requires four history slots with current frame at index 3")
         return {
-            "images": _camera_images(agent_input, CURRENT_FRAME_INDEX),
+            "images": preprocess_camera_images(_camera_images(agent_input, CURRENT_FRAME_INDEX)),
             "ego_status": _ego_status(agent_input, CURRENT_FRAME_INDEX),
         }
 
@@ -81,7 +82,7 @@ class LatentWAMTargetBuilder(AbstractTargetBuilder):
         self.config = config
 
     def get_unique_name(self) -> str:
-        return PUBLIC_TARGET_KEY
+        return TARGET_KEY
 
     def compute_targets(self, scene: Scene) -> Dict[str, torch.Tensor]:
         trajectory = scene.get_future_trajectory(num_trajectory_frames=self.config.trajectory.num_poses).poses

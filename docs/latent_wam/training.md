@@ -12,11 +12,16 @@ Losses are preserved from the final implementation:
 - cosine geometry alignment loss;
 - command cross-entropy plus velocity/acceleration MSE.
 
-Generate version 2 caches first, then train with `build_target_encoder=true` and
-`use_cache_without_dataset=true`; commands are in the root README. Version 1
-public caches are rejected because they omitted WorldMirror camera priors. The target
-DINO encoder is initialized from the online encoder when loading public
+Generate the sharded cache first, then train with `build_target_encoder=true`
+and `use_cache_without_dataset=true`; commands are in the root README. The
+target DINO encoder is initialized from the online encoder when loading public
 safetensors and is updated with EMA momentum 0.999.
+
+The cache stores preprocessed `uint8 [3,224,448,3]` images once per unique
+frame. The model moves them to the accelerator and applies only DINO rescaling
+and normalization. Locality-aware block shuffle is the default; use
+`cache_sampler_mode=global` only for throughput comparison. A node-local copy
+can be enabled with `cache_staging_path=/local/nvme/latent_wam_cache`.
 
 The public safetensors file intentionally omits optimizer and target-encoder
 state. It can initialize fine-tuning, but cannot reproduce an exact Lightning

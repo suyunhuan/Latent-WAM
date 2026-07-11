@@ -40,10 +40,10 @@ def cache_features(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[
     scene_filter.log_names = log_names
     scene_filter.tokens = tokens
     scene_loader = SceneLoader(
-        synthetic_sensor_path=Path(cfg.synthetic_sensor_path),
+        synthetic_sensor_path=Path(cfg.synthetic_sensor_path) if cfg.synthetic_sensor_path else None,
         original_sensor_path=Path(cfg.original_sensor_path),
         data_path=Path(cfg.navsim_log_path),
-        synthetic_scenes_path=Path(cfg.synthetic_scenes_path),
+        synthetic_scenes_path=Path(cfg.synthetic_scenes_path) if cfg.synthetic_scenes_path else None,
         scene_filter=scene_filter,
         sensor_config=agent.get_sensor_config(),
     )
@@ -74,13 +74,13 @@ def main(cfg: DictConfig) -> None:
     logger.info("Building SceneLoader")
     scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
     data_path = Path(cfg.navsim_log_path)
-    synthetic_sensor_path = Path(cfg.synthetic_sensor_path)
+    synthetic_sensor_path = Path(cfg.synthetic_sensor_path) if cfg.synthetic_sensor_path else None
     original_sensor_path = Path(cfg.original_sensor_path)
     scene_loader = SceneLoader(
         synthetic_sensor_path=synthetic_sensor_path,
         original_sensor_path=original_sensor_path,
         data_path=data_path,
-        synthetic_scenes_path=Path(cfg.synthetic_scenes_path),
+        synthetic_scenes_path=Path(cfg.synthetic_scenes_path) if cfg.synthetic_scenes_path else None,
         scene_filter=scene_filter,
         sensor_config=SensorConfig.build_no_sensors(),
     )

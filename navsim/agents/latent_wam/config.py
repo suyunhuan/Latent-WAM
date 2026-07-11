@@ -3,8 +3,6 @@
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Tuple
 
-from navsim.agents.latent_wam.schema import CACHE_SCHEMA_VERSION
-
 
 @dataclass
 class VisionConfig:
@@ -89,7 +87,6 @@ class DataConfig:
     time_offsets_s: Tuple[float, ...] = (-1.5, 0.0, 2.0, 4.0)
     num_views: int = 3
     scene_tokens_per_view: int = 16
-    schema_version: int = CACHE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         self.time_offsets_s = tuple(self.time_offsets_s)
@@ -103,8 +100,6 @@ class DataConfig:
             raise ValueError("released checkpoints require exactly three camera views")
         if self.scene_tokens_per_view < 1:
             raise ValueError("data.scene_tokens_per_view must be positive")
-        if self.schema_version != CACHE_SCHEMA_VERSION:
-            raise ValueError(f"released caches require schema version {CACHE_SCHEMA_VERSION}")
 
 
 @dataclass

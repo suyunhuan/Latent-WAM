@@ -8,6 +8,9 @@ defaults:
 cache_path: ${oc.env:NAVSIM_EXP_ROOT}/latent_wam_cache
 force_cache_computation: false
 distributed_dry_run: false
+frames_per_shard: 64
+extraction_batch_frames: 1
+verify_resume_checksums: true
 
 hydra:
   run:

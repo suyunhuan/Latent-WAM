@@ -1,57 +1,66 @@
-"""Build versioned Latent WAM training caches with WorldMirror supervision."""
+"""Build the frame-deduplicated sharded Latent WAM training cache."""
 
-import json
+from __future__ import annotations
+
 import logging
-import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import hydra
 import numpy as np
 import torch
 from hydra.utils import instantiate
+from nuplan.common.actor_state.state_representation import StateSE2
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from navsim.agents.latent_wam.cache import is_valid_public_cache, publish_public_cache
-from navsim.agents.latent_wam.distributed_cache import (
-    CacheFailure,
-    DistributedCacheContext,
-    RankCacheSummary,
-    build_cache_manifest,
-    canonical_tokens,
-    plan_token_shard,
+from navsim.agents.latent_wam.cache import (
+    MANIFEST_NAME,
+    FrameRecord,
+    SampleRecord,
+    fingerprint_digest,
+    load_cache_manifest,
+    load_cache_shard_record,
+    publish_cache_index,
+    read_partial_cache_indices,
+    sha256_file,
+    validate_cache_headers,
+    write_cache_shard,
+    write_partial_cache_index,
 )
-from navsim.agents.latent_wam.features import CAMERA_NAMES, TRAINING_FRAME_INDICES, build_camera_sensor_config
+from navsim.agents.latent_wam.distributed_cache import (
+    DistributedCacheContext,
+    FrameCachePlan,
+    PlannedFrame,
+    build_frame_cache_plan,
+    plan_shard_ids,
+)
+from navsim.agents.latent_wam.features import CAMERA_NAMES, CURRENT_FRAME_INDEX, TRAINING_FRAME_INDICES
 from navsim.agents.latent_wam.geometry import WorldMirrorFeatureExtractor, WorldMirrorInputs
-from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
-from navsim.common.dataclasses import Scene, SceneFilter
+from navsim.agents.latent_wam.preprocessing import (
+    DINO_CROP_SIZE,
+    DINO_RESIZE_SIZE,
+    PREPROCESSING_REVISION,
+    preprocess_camera_images,
+)
+from navsim.common.dataclasses import Cameras, Scene, SceneFilter, SensorConfig
 from navsim.common.dataloader import SceneLoader
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_geometry_utils import (
+    convert_absolute_to_relative_se2_array,
+)
 
 logger = logging.getLogger(__name__)
 CONFIG_PATH = "config/training"
 CONFIG_NAME = "latent_wam_caching"
-LEGACY_RESIZE_SIZE = (455, 256)
-LEGACY_CROP_SIZE = (448, 224)
 
 
 def adjust_camera_intrinsics(
     intrinsics: np.ndarray,
-    original_size: tuple[int, int],
-    resize_size: tuple[int, int] = LEGACY_RESIZE_SIZE,
-    crop_size: tuple[int, int] = LEGACY_CROP_SIZE,
+    original_size: Tuple[int, int],
+    resize_size: Tuple[int, int] = (DINO_RESIZE_SIZE[1], DINO_RESIZE_SIZE[0]),
+    crop_size: Tuple[int, int] = (DINO_CROP_SIZE[1], DINO_CROP_SIZE[0]),
 ) -> np.ndarray:
-    """Adjust camera intrinsics for the legacy resize and center crop.
-
-    Args:
-        intrinsics: Original camera matrix shaped ``[3,3]``.
-        original_size: Original image size as ``(width, height)``.
-        resize_size: Intermediate image size as ``(width, height)``.
-        crop_size: Final center-crop size as ``(width, height)``.
-
-    Returns:
-        The adjusted float32 camera matrix shaped ``[3,3]``.
-    """
+    """Adjust a camera matrix for deterministic resize and center crop."""
     original_width, original_height = original_size
     resize_width, resize_height = resize_size
     crop_width, crop_height = crop_size
@@ -67,27 +76,21 @@ def adjust_camera_intrinsics(
     return adjusted
 
 
-def build_world_mirror_inputs(scene: Scene) -> WorldMirrorInputs:
-    """Build calibrated WorldMirror inputs from the released NAVSIM frames.
-
-    Args:
-        scene: NAVSIM scene containing the four selected frames and cameras.
-
-    Returns:
-        Time/view-aligned images, intrinsics, and world-to-camera extrinsics.
-
-    Raises:
-        ValueError: If an image or camera calibration field is missing or invalid.
-    """
+def _world_mirror_inputs_from_cameras(
+    cameras_per_frame: Sequence[Cameras], frame_labels: Sequence[int] | None = None
+) -> WorldMirrorInputs:
     images = []
     intrinsics = []
     extrinsics = []
-    for frame_index in TRAINING_FRAME_INDICES:
+    labels = list(range(len(cameras_per_frame))) if frame_labels is None else list(frame_labels)
+    if len(labels) != len(cameras_per_frame):
+        raise ValueError("frame labels must align with the camera batch")
+    for frame_index, cameras in zip(labels, cameras_per_frame):
         frame_images = []
         frame_intrinsics = []
         frame_extrinsics = []
         for camera_name in CAMERA_NAMES:
-            camera = getattr(scene.frames[frame_index].cameras, camera_name)
+            camera = getattr(cameras, camera_name)
             for field_name in ("image", "intrinsics", "sensor2lidar_rotation", "sensor2lidar_translation"):
                 if getattr(camera, field_name) is None:
                     raise ValueError(f"frame {frame_index} camera {camera_name} is missing {field_name}")
@@ -106,181 +109,300 @@ def build_world_mirror_inputs(scene: Scene) -> WorldMirrorInputs:
         images.append(torch.stack(frame_images))
         intrinsics.append(torch.stack(frame_intrinsics))
         extrinsics.append(torch.stack(frame_extrinsics))
-    inputs = WorldMirrorInputs(
+    result = WorldMirrorInputs(
         images=torch.stack(images),
         intrinsics=torch.stack(intrinsics),
         extrinsics=torch.stack(extrinsics),
     )
-    inputs.validate()
-    return inputs
+    result.validate()
+    return result
 
 
-def _scene_ego_status(scene: Scene) -> torch.Tensor:
-    """Collect the four ego-status vectors used by Latent WAM training."""
-    statuses = []
-    for frame_index in TRAINING_FRAME_INDICES:
-        frame = scene.frames[frame_index]
-        statuses.append(
-            torch.cat(
-                [
-                    torch.as_tensor(frame.ego_status.driving_command, dtype=torch.float32),
-                    torch.as_tensor(frame.ego_status.ego_velocity, dtype=torch.float32),
-                    torch.as_tensor(frame.ego_status.ego_acceleration, dtype=torch.float32),
-                ]
-            )
+def build_world_mirror_inputs(scene: Scene) -> WorldMirrorInputs:
+    """Build WorldMirror inputs for the four training frames of an existing scene."""
+    return _world_mirror_inputs_from_cameras(
+        [scene.frames[index].cameras for index in TRAINING_FRAME_INDICES], frame_labels=TRAINING_FRAME_INDICES
+    )
+
+
+def _load_frame_cameras(frame: Mapping[str, Any], sensor_root: Path) -> Cameras:
+    return Cameras.from_camera_dict(
+        sensor_blobs_path=sensor_root,
+        camera_dict=frame["cams"],
+        sensor_names=list(CAMERA_NAMES),
+    )
+
+
+def _ego_status(frame: Mapping[str, Any]) -> torch.Tensor:
+    dynamic = torch.as_tensor(frame["ego_dynamic_state"], dtype=torch.float32)
+    command = torch.as_tensor(frame["driving_command"], dtype=torch.float32)
+    status = torch.cat((command, dynamic))
+    if status.shape != (8,):
+        raise ValueError("raw NAVSIM ego status must contain four commands and four dynamic values")
+    return status
+
+
+def _sample_trajectory(scene_frames: Sequence[Mapping[str, Any]], num_poses: int) -> torch.Tensor:
+    trajectory_frames = scene_frames[CURRENT_FRAME_INDEX : CURRENT_FRAME_INDEX + num_poses + 1]
+    if len(trajectory_frames) != num_poses + 1:
+        raise ValueError("sample does not contain enough future frames for its trajectory")
+    poses = np.stack([Scene._build_ego_status(frame).ego_pose for frame in trajectory_frames])
+    relative = convert_absolute_to_relative_se2_array(StateSE2(*poses[0]), poses[1:])
+    return torch.as_tensor(relative, dtype=torch.float32)
+
+
+def _frames_in_shard(plan: FrameCachePlan, shard_id: int) -> List[PlannedFrame]:
+    return [frame for frame in plan.frames if frame.shard_id == shard_id]
+
+
+def _generate_shard(
+    cache_root: Path,
+    shard_id: int,
+    frames: Sequence[PlannedFrame],
+    plan: FrameCachePlan,
+    scenes: Mapping[str, Sequence[Mapping[str, Any]]],
+    sensor_root: Path,
+    extractor: WorldMirrorFeatureExtractor,
+    extraction_batch_frames: int,
+    cache_fingerprint_sha256: str,
+) -> Dict[str, Any]:
+    frame_count = len(frames)
+    image_buffer = torch.empty((frame_count, 3, *DINO_CROP_SIZE, 3), dtype=torch.uint8)
+    geometry_buffer: torch.Tensor | None = None
+    ego_status_buffer = torch.empty((frame_count, 8), dtype=torch.float32)
+    for begin in range(0, frame_count, extraction_batch_frames):
+        batch_frames = frames[begin : begin + extraction_batch_frames]
+        raw_frames = [
+            scenes[plan.sources[frame.token].sample_token][plan.sources[frame.token].frame_index]
+            for frame in batch_frames
+        ]
+        cameras = [_load_frame_cameras(frame, sensor_root) for frame in raw_frames]
+        inputs = _world_mirror_inputs_from_cameras(cameras)
+        processed_images = preprocess_camera_images(inputs.images)
+        geometry = extractor(inputs)
+        if processed_images.shape[1:] != (3, *DINO_CROP_SIZE, 3):
+            raise ValueError(f"preprocessed image shape is incompatible: {tuple(processed_images.shape)}")
+        if geometry.shape[1:] != (3, 519, 2048) or geometry.dtype != torch.float32:
+            raise ValueError(f"WorldMirror geometry shape or dtype is incompatible: {geometry.shape}/{geometry.dtype}")
+        if geometry_buffer is None:
+            geometry_buffer = torch.empty((frame_count, *geometry.shape[1:]), dtype=torch.float32)
+        end = begin + len(batch_frames)
+        image_buffer[begin:end].copy_(processed_images)
+        geometry_buffer[begin:end].copy_(geometry)
+        ego_status_buffer[begin:end].copy_(torch.stack([_ego_status(frame) for frame in raw_frames]))
+    assert geometry_buffer is not None
+    return write_cache_shard(
+        cache_root,
+        shard_id,
+        [frame.token for frame in frames],
+        image_buffer,
+        geometry_buffer,
+        ego_status_buffer,
+        cache_fingerprint_sha256,
+    )
+
+
+def _cache_fingerprint(cfg: DictConfig, plan: FrameCachePlan) -> Dict[str, Any]:
+    worldmirror_weights = Path(str(cfg.agent.config.geometry.model_id)).expanduser() / "model.safetensors"
+    if not worldmirror_weights.is_file():
+        raise ValueError(f"WorldMirror model.safetensors is required for cache identity: {worldmirror_weights}")
+    return {
+        "dataset": {"name": "NAVSIM", "version": "2.1.2", "split": str(cfg.train_test_split.data_split)},
+        "plan_sha256": plan.fingerprint(),
+        "sample_count": len(plan.samples),
+        "logs": sorted({sample.log_name for sample in plan.samples}),
+        "time_offsets_s": list(cfg.agent.config.data.time_offsets_s),
+        "camera_names": list(CAMERA_NAMES),
+        "preprocessing": {
+            "revision": PREPROCESSING_REVISION,
+            "resize_size": list(DINO_RESIZE_SIZE),
+            "crop_size": list(DINO_CROP_SIZE),
+            "interpolation": "torch_bicubic_antialias",
+        },
+        "worldmirror": {
+            "model_id": str(cfg.agent.config.geometry.model_id),
+            "weights_sha256": sha256_file(worldmirror_weights),
+            "patch_start_index": int(cfg.agent.config.geometry.patch_start_index),
+        },
+        "geometry": {"shape_per_frame": [3, 519, 2048], "dtype": "float32"},
+    }
+
+
+def _frame_records(frames: Iterable[PlannedFrame]) -> List[FrameRecord]:
+    return [
+        FrameRecord(frame.token, frame.log_name, frame.timestamp, frame.shard_id, frame.row_index) for frame in frames
+    ]
+
+
+def _sample_records(
+    samples: Iterable[Any], scenes: Mapping[str, Sequence[Mapping[str, Any]]], num_poses: int
+) -> List[SampleRecord]:
+    return [
+        SampleRecord(
+            token=sample.token,
+            log_name=sample.log_name,
+            frame_tokens=sample.frame_tokens,
+            trajectory=_sample_trajectory(scenes[sample.token], num_poses),
         )
-    return torch.stack(statuses)
-
-
-def _token_to_log_name(scene_loader: SceneLoader) -> Dict[str, str]:
-    mapping: Dict[str, str] = {}
-    for log_name, tokens in scene_loader.get_tokens_list_per_log().items():
-        for token in tokens:
-            if token in mapping:
-                raise ValueError(f"cache token belongs to multiple logs: {token}")
-            mapping[token] = log_name
-    return mapping
-
-
-def _cache_paths(cache_root: Path, log_name: str, token: str) -> Tuple[Path, Path]:
-    sample_root = cache_root / log_name / token
-    return sample_root / PUBLIC_FEATURE_NAME, sample_root / PUBLIC_TARGET_NAME
-
-
-def _write_manifest(cache_root: Path, manifest: dict) -> Path:
-    metadata_root = cache_root / "metadata"
-    metadata_root.mkdir(parents=True, exist_ok=True)
-    manifest_path = metadata_root / "cache_manifest.json"
-    temporary_path = metadata_root / f"cache_manifest.rank_0.pid_{os.getpid()}.tmp"
-    try:
-        temporary_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        json.loads(temporary_path.read_text(encoding="utf-8"))
-        os.replace(temporary_path, manifest_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-    return manifest_path
+        for sample in samples
+    ]
 
 
 def _run_cache(cfg: DictConfig, context: DistributedCacheContext) -> None:
     config = instantiate(cfg.agent.config)
     scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
-    sensor_config = build_camera_sensor_config(list(TRAINING_FRAME_INDICES))
     scene_loader = SceneLoader(
-        synthetic_sensor_path=Path(cfg.synthetic_sensor_path),
+        synthetic_sensor_path=None,
         original_sensor_path=Path(cfg.original_sensor_path),
         data_path=Path(cfg.navsim_log_path),
-        synthetic_scenes_path=Path(cfg.synthetic_scenes_path),
+        synthetic_scenes_path=None,
         scene_filter=scene_filter,
-        sensor_config=sensor_config,
+        sensor_config=SensorConfig.build_no_sensors(),
     )
-    all_tokens = canonical_tokens(scene_loader.tokens)
-    context.verify_token_set(all_tokens)
-    assigned_tokens = plan_token_shard(all_tokens, context.world_size, context.rank)
-    token_to_log = _token_to_log_name(scene_loader)
-    missing_log_names = set(all_tokens).difference(token_to_log)
-    if missing_log_names:
-        raise ValueError(f"cache tokens have no log mapping: {sorted(missing_log_names)}")
+    if scene_loader.synthetic_scenes:
+        raise ValueError("Latent WAM cache generation supports released original NAVSIM scenes only")
+    plan = build_frame_cache_plan(
+        scene_loader.scene_frames_dicts,
+        frame_indices=TRAINING_FRAME_INDICES,
+        frames_per_shard=int(cfg.frames_per_shard),
+    )
+    context.verify_plan(plan)
+    fingerprint = context.broadcast_object(_cache_fingerprint(cfg, plan) if context.rank == 0 else None)
+    cache_fingerprint_sha256 = fingerprint_digest(fingerprint)
     cache_root = Path(cfg.cache_path)
-    logger.info(
-        "Rank %d/%d assigned %d of %d cache tokens",
-        context.rank,
-        context.world_size,
-        len(assigned_tokens),
-        len(all_tokens),
-    )
-
+    manifest_path = cache_root / MANIFEST_NAME
+    cache_state = None
+    cache_error = None
+    if context.rank == 0 and manifest_path.is_file() and not cfg.force_cache_computation:
+        try:
+            manifest = load_cache_manifest(
+                cache_root,
+                expected_fingerprint=fingerprint,
+                verify_presence=False,
+            )
+        except ValueError as error:
+            cache_error = str(error)
+        else:
+            try:
+                manifest = load_cache_manifest(
+                    cache_root,
+                    expected_fingerprint=fingerprint,
+                    verify_files=bool(cfg.verify_resume_checksums),
+                )
+                validate_cache_headers(cache_root, manifest)
+                cache_state = "complete"
+            except ValueError:
+                cache_state = "repair"
+    cache_state, cache_error = context.broadcast_object((cache_state, cache_error))
+    if cache_error:
+        raise ValueError(cache_error)
+    if cache_state == "complete":
+        logger.info("Complete compatible cache already exists at %s", cache_root)
+        return
     if cfg.distributed_dry_run:
-        summary = RankCacheSummary(rank=context.rank, assigned=len(assigned_tokens))
-    else:
-        skipped_tokens: List[str] = []
-        pending_tokens: List[str] = []
-        for token in assigned_tokens:
-            feature_path, target_path = _cache_paths(cache_root, token_to_log[token], token)
-            if not cfg.force_cache_computation and is_valid_public_cache(
-                feature_path,
-                target_path,
-                expected_num_poses=config.trajectory.num_poses,
-            ):
-                skipped_tokens.append(token)
-            else:
-                pending_tokens.append(token)
-
-        failures: List[CacheFailure] = []
-        extractor = None
-        if pending_tokens:
-            try:
-                extractor = WorldMirrorFeatureExtractor.from_pretrained(config.geometry, config.vision)
-            except Exception as error:
-                logger.exception("Rank %d failed to initialize WorldMirror", context.rank)
-                failure_message = f"WorldMirror initialization failed: {type(error).__name__}: {error}"
-                failures.extend(
-                    CacheFailure(token=token, log_name=token_to_log[token], error=failure_message)
-                    for token in pending_tokens
-                )
-                pending_tokens = []
-        succeeded_tokens: List[str] = []
-        for token in tqdm(pending_tokens, desc=f"Caching Latent WAM rank {context.rank}"):
-            log_name = token_to_log[token]
-            try:
-                assert extractor is not None
-                scene = scene_loader.get_scene_from_token(token)
-                world_mirror_inputs = build_world_mirror_inputs(scene)
-                features = {
-                    "images": world_mirror_inputs.images,
-                    "geometry": extractor(world_mirror_inputs),
-                    "ego_status": _scene_ego_status(scene),
-                    "schema_version": torch.tensor(config.data.schema_version),
-                }
-                targets = {
-                    "trajectory": torch.as_tensor(
-                        scene.get_future_trajectory(config.trajectory.num_poses).poses,
-                        dtype=torch.float32,
-                    )
-                }
-                sample_root = cache_root / log_name / token
-                publish_public_cache(
-                    sample_root,
-                    features,
-                    targets,
-                    rank=context.rank,
-                    expected_num_poses=config.trajectory.num_poses,
-                )
-                succeeded_tokens.append(token)
-            except Exception as error:
-                logger.exception("Rank %d failed to cache token %s", context.rank, token)
-                failures.append(
-                    CacheFailure(
-                        token=token,
-                        log_name=log_name,
-                        error=f"{type(error).__name__}: {error}",
-                    )
-                )
-        summary = RankCacheSummary(
-            rank=context.rank,
-            assigned=len(assigned_tokens),
-            succeeded=len(succeeded_tokens),
-            skipped=len(skipped_tokens),
-            failures=tuple(failures),
+        logger.info(
+            "Verified cache plan: %d samples, %d unique frames, %d shards across %d ranks",
+            len(plan.samples),
+            len(plan.frames),
+            plan.num_shards,
+            context.world_size,
         )
-
-    summaries = context.all_gather_object(summary)
-    manifest = build_cache_manifest(
-        summaries=summaries,
-        total_tokens=len(all_tokens),
-        world_size=context.world_size,
-        dry_run=bool(cfg.distributed_dry_run),
-    )
-    if context.rank == 0:
-        manifest_path = _write_manifest(cache_root, manifest)
-        logger.info("Cache manifest written to %s", manifest_path)
+        return
+    if context.rank == 0 and manifest_path.exists():
+        manifest_path.unlink()
     context.barrier()
-    if manifest["failed"]:
-        raise RuntimeError(f"cache generation failed for {manifest['failed']} tokens")
+
+    owned_shards = plan_shard_ids(plan.num_shards, context.world_size, context.rank)
+    shard_records = []
+    pending = []
+    for shard_id in owned_shards:
+        frames = _frames_in_shard(plan, shard_id)
+        existing = None
+        if not cfg.force_cache_computation:
+            existing = load_cache_shard_record(
+                cache_root,
+                shard_id,
+                [frame.token for frame in frames],
+                cache_fingerprint_sha256,
+                verify_files=bool(cfg.verify_resume_checksums),
+            )
+        if existing is None:
+            pending.append((shard_id, frames))
+        else:
+            shard_records.append(existing)
+
+    extractor = None
+    failures = []
+    if pending:
+        try:
+            extractor = WorldMirrorFeatureExtractor.from_pretrained(
+                config.geometry,
+                config.vision,
+                device=torch.device("cuda", context.local_rank) if context.cuda_available else torch.device("cpu"),
+            )
+        except Exception as error:
+            failures.append(f"rank {context.rank} failed to initialize WorldMirror: {type(error).__name__}: {error}")
+    if extractor is not None:
+        for shard_id, frames in tqdm(pending, desc=f"Caching Latent WAM rank {context.rank}"):
+            try:
+                shard_records.append(
+                    _generate_shard(
+                        cache_root,
+                        shard_id,
+                        frames,
+                        plan,
+                        scene_loader.scene_frames_dicts,
+                        Path(cfg.original_sensor_path),
+                        extractor,
+                        int(cfg.extraction_batch_frames),
+                        cache_fingerprint_sha256,
+                    )
+                )
+            except Exception as error:
+                logger.exception("Rank %d failed to build shard %d", context.rank, shard_id)
+                failures.append(f"rank {context.rank} shard {shard_id}: {type(error).__name__}: {error}")
+
+    all_failures = context.all_gather_object(failures)
+    if any(all_failures):
+        raise RuntimeError(f"cache generation failed: {all_failures}")
+
+    owned_frames = [frame for frame in plan.frames if frame.shard_id in set(owned_shards)]
+    owned_samples = [sample for index, sample in enumerate(plan.samples) if index % context.world_size == context.rank]
+    write_partial_cache_index(
+        cache_root,
+        context.rank,
+        _frame_records(owned_frames),
+        _sample_records(owned_samples, scene_loader.scene_frames_dicts, config.trajectory.num_poses),
+    )
+    gathered_shards = context.all_gather_object(shard_records)
+    context.barrier()
+
+    publish_error = None
+    if context.rank == 0:
+        try:
+            frames, samples = read_partial_cache_indices(cache_root, context.world_size)
+            all_shards = [shard for rank_shards in gathered_shards for shard in rank_shards]
+            publish_cache_index(
+                cache_root,
+                frames=frames,
+                samples=samples,
+                shards=all_shards,
+                fingerprint=fingerprint,
+                frames_per_shard=int(cfg.frames_per_shard),
+            )
+            logger.info("Published complete Latent WAM cache at %s", cache_root)
+        except Exception as error:
+            logger.exception("Failed to publish final cache manifest")
+            publish_error = f"{type(error).__name__}: {error}"
+    publish_error = context.broadcast_object(publish_error)
+    if publish_error:
+        raise RuntimeError(f"cache index publication failed: {publish_error}")
+    context.barrier()
 
 
 @hydra.main(config_path=CONFIG_PATH, config_name=CONFIG_NAME, version_base=None)
 def main(cfg: DictConfig) -> None:
-    """Cache all scenes selected by the Hydra split configuration."""
+    """Generate all shards selected by the Hydra scene split."""
     context = DistributedCacheContext.from_environment()
     with context.activate():
         _run_cache(cfg, context)

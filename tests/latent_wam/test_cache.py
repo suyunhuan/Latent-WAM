@@ -1,206 +1,160 @@
-import gzip
-import os
-import pickle
 from pathlib import Path
 
-import numpy as np
 import pytest
 import torch
 
 from navsim.agents.latent_wam.cache import (
-    LEGACY_FRAME_KEYS,
-    LEGACY_STATUS_KEYS,
-    build_structural_fixture,
-    is_valid_public_cache,
-    load_legacy_features,
-    publish_public_cache,
+    CACHE_FORMAT,
+    SCHEMA_REVISION,
+    FrameRecord,
+    SampleRecord,
+    fingerprint_digest,
+    load_cache_manifest,
+    load_cache_shard_record,
+    publish_cache_index,
+    stage_cache,
+    write_cache_shard,
 )
+from navsim.agents.latent_wam.config import LatentWAMConfig, VisionConfig
 from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
-from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
 
 
-def _dump_pickle(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wb") as file:
-        pickle.dump(value, file)
+def _cache_tensors(num_frames: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    images = torch.arange(num_frames, dtype=torch.uint8).view(num_frames, 1, 1, 1, 1).expand(num_frames, 3, 224, 448, 3)
+    geometry = torch.arange(num_frames, dtype=torch.float32).view(num_frames, 1, 1, 1).expand(num_frames, 3, 519, 2048)
+    ego_status = torch.arange(num_frames * 8, dtype=torch.float32).reshape(num_frames, 8)
+    return images.contiguous(), geometry.contiguous(), ego_status
 
 
-def _write_frame(cache_root: Path, token: str) -> None:
-    frame_root = cache_root / token
-    frame_root.mkdir(parents=True)
-    geometry_path = frame_root / "geometry_feature.npy"
-    np.save(geometry_path, np.ones((1, 3, 9, 2048), dtype=np.float32))
-    _dump_pickle(
-        frame_root / f"{token}.gz",
-        {
-            "dino_feature": np.zeros((3, 8, 12, 3), dtype=np.uint8),
-            "geometry_feature": geometry_path,
+def _publish_fixture(cache_root: Path) -> None:
+    frame_tokens = ("frame-0", "frame-1", "frame-2", "frame-3")
+    images, geometry, ego_status = _cache_tensors(len(frame_tokens))
+    fingerprint = {
+        "dataset": {"name": "fixture"},
+        "time_offsets_s": [-1.5, 0.0, 2.0, 4.0],
+        "camera_names": ["cam_l0", "cam_f0", "cam_r0"],
+        "preprocessing": {
+            "revision": 1,
+            "resize_size": [256, 455],
+            "crop_size": [224, 448],
+            "interpolation": "torch_bicubic_antialias",
         },
-    )
-
-
-def test_load_legacy_features(tmp_path: Path) -> None:
-    index = {}
-    for frame_idx, frame_key in enumerate(LEGACY_FRAME_KEYS):
-        token = f"frame-{frame_idx}"
-        index[frame_key] = token
-        _write_frame(tmp_path, token)
-    for status_idx, status_key in enumerate(LEGACY_STATUS_KEYS):
-        index[status_key] = torch.full((8,), float(status_idx))
-    index_path = tmp_path / "transfuser_feature.gz"
-    _dump_pickle(index_path, index)
-
-    features = load_legacy_features(index_path, tmp_path)
-
-    assert features.images.shape == (4, 3, 8, 12, 3)
-    assert features.geometry.shape == (4, 3, 9, 2048)
-    assert features.ego_status.shape == (4, 8)
-
-
-def test_build_structural_fixture_from_one_frame(tmp_path: Path) -> None:
-    token = "frame"
-    _write_frame(tmp_path, token)
-    index = {key: torch.zeros(8) for key in LEGACY_STATUS_KEYS}
-    index_path = tmp_path / "transfuser_feature.gz"
-    _dump_pickle(index_path, index)
-
-    features = build_structural_fixture(
-        index_path=index_path,
-        frame_cache_path=tmp_path / token / f"{token}.gz",
-        geometry_path=tmp_path / token / "geometry_feature.npy",
-    )
-
-    assert features.images.shape[0] == 4
-    assert torch.equal(features.images[0], features.images[-1])
-
-
-def test_public_cache_dataset(tmp_path: Path) -> None:
-    sample_root = tmp_path / "log" / "sample"
-    publish_public_cache(
-        sample_root,
-        {
-            "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
-            "geometry": torch.zeros((4, 3, 519, 2048)),
-            "ego_status": torch.zeros((4, 8)),
-            "schema_version": 2,
+        "worldmirror": {
+            "model_id": "tencent/HunyuanWorld-Mirror",
+            "patch_start_index": 7,
+            "weights_sha256": "abc",
         },
-        {"trajectory": torch.zeros((8, 3))},
-        rank=0,
-        expected_num_poses=8,
+        "geometry": {"shape_per_frame": [3, 519, 2048], "dtype": "float32"},
+    }
+    shard = write_cache_shard(
+        cache_root,
+        0,
+        frame_tokens,
+        images,
+        geometry,
+        ego_status,
+        fingerprint_digest(fingerprint),
     )
+    frames = [
+        FrameRecord(token=token, log_name="log", timestamp=index, shard_id=0, row_index=index)
+        for index, token in enumerate(frame_tokens)
+    ]
+    samples = [
+        SampleRecord(
+            token="sample",
+            log_name="log",
+            frame_tokens=frame_tokens,
+            trajectory=torch.arange(24, dtype=torch.float32).reshape(8, 3),
+        )
+    ]
+    publish_cache_index(
+        cache_root,
+        frames=frames,
+        samples=samples,
+        shards=[shard],
+        fingerprint=fingerprint,
+        frames_per_shard=64,
+    )
+
+
+def test_sharded_cache_reconstructs_sample_from_frame_index(tmp_path: Path) -> None:
+    _publish_fixture(tmp_path)
 
     dataset = LatentWAMCacheDataset(tmp_path)
     features, targets = dataset[0]
 
     assert len(dataset) == 1
-    assert features["images"].shape == (4, 3, 8, 12, 3)
-    assert targets["trajectory"].shape == (8, 3)
+    assert features["token"] == "sample"
+    assert features["images"].shape == (4, 3, 224, 448, 3)
+    assert features["geometry"].shape == (4, 3, 519, 2048)
+    assert torch.equal(features["images"][:, 0, 0, 0, 0], torch.arange(4, dtype=torch.uint8))
+    assert torch.equal(features["ego_status"], torch.arange(32, dtype=torch.float32).reshape(4, 8))
+    assert torch.equal(targets["trajectory"], torch.arange(24, dtype=torch.float32).reshape(8, 3))
+
+    manifest = load_cache_manifest(tmp_path)
+    assert manifest["format"] == CACHE_FORMAT
+    assert manifest["schema_revision"] == SCHEMA_REVISION
+    assert manifest["status"] == "complete"
+    assert manifest["frame_count"] == 4
+    assert manifest["sample_count"] == 1
 
 
-def test_public_v1_cache_is_not_discovered(tmp_path: Path) -> None:
-    sample_root = tmp_path / "log" / "sample"
-    _dump_pickle(sample_root / "latent_wam_features_v1.gz", {})
-    _dump_pickle(sample_root / "latent_wam_targets_v1.gz", {})
+def test_cache_is_unavailable_until_final_manifest_is_published(tmp_path: Path) -> None:
+    images, geometry, ego_status = _cache_tensors(1)
+    write_cache_shard(tmp_path, 0, ("frame",), images, geometry, ego_status, "0" * 64)
 
-    assert len(LatentWAMCacheDataset(tmp_path)) == 0
-
-
-def test_public_v2_cache_requires_schema_version(tmp_path: Path) -> None:
-    sample_root = tmp_path / "log" / "sample"
-    _dump_pickle(
-        sample_root / "latent_wam_features_v2.gz",
-        {
-            "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
-            "geometry": torch.zeros((4, 3, 9, 2048)),
-            "ego_status": torch.zeros((4, 8)),
-        },
-    )
-    _dump_pickle(sample_root / "latent_wam_targets_v2.gz", {"trajectory": torch.zeros((8, 3))})
-
-    with pytest.raises(ValueError, match="schema_version"):
-        LatentWAMCacheDataset(tmp_path)[0]
+    with pytest.raises(ValueError, match="manifest"):
+        LatentWAMCacheDataset(tmp_path)
 
 
-def test_public_cache_is_atomically_published_and_validated(tmp_path: Path) -> None:
-    features = {
-        "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
-        "geometry": torch.zeros((4, 3, 519, 2048)),
-        "ego_status": torch.zeros((4, 8)),
-        "schema_version": 2,
-    }
-    targets = {"trajectory": torch.zeros((8, 3))}
+def test_resumable_shard_is_bound_to_the_complete_cache_fingerprint(tmp_path: Path) -> None:
+    images, geometry, ego_status = _cache_tensors(1)
+    write_cache_shard(tmp_path, 0, ("frame",), images, geometry, ego_status, "a" * 64)
 
-    publish_public_cache(tmp_path, features, targets, rank=3, expected_num_poses=8)
-
-    feature_path = tmp_path / PUBLIC_FEATURE_NAME
-    target_path = tmp_path / PUBLIC_TARGET_NAME
-    assert is_valid_public_cache(feature_path, target_path, expected_num_poses=8)
-    assert not list(tmp_path.glob("*.tmp"))
-
-    target_path.write_bytes(b"broken")
-    assert not is_valid_public_cache(feature_path, target_path, expected_num_poses=8)
+    assert load_cache_shard_record(tmp_path, 0, ("frame",), "a" * 64) is not None
+    assert load_cache_shard_record(tmp_path, 0, ("frame",), "b" * 64) is None
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("images", torch.zeros((4, 3, 8, 12, 3), dtype=torch.float32)),
-        ("geometry", torch.zeros((4, 3, 9, 2048), dtype=torch.float32)),
-        ("geometry", torch.zeros((4, 3, 519, 2048), dtype=torch.float64)),
-    ],
-)
-def test_public_cache_rejects_invalid_v2_tensor_structure(tmp_path: Path, field: str, value: torch.Tensor) -> None:
-    features = {
-        "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
-        "geometry": torch.zeros((4, 3, 519, 2048), dtype=torch.float32),
-        "ego_status": torch.zeros((4, 8), dtype=torch.float32),
-        "schema_version": 2,
-    }
-    features[field] = value
+def test_cache_rejects_incompatible_fingerprint(tmp_path: Path) -> None:
+    _publish_fixture(tmp_path)
 
-    with pytest.raises(ValueError):
-        publish_public_cache(
+    with pytest.raises(ValueError, match="fingerprint"):
+        load_cache_manifest(tmp_path, expected_fingerprint={"dataset": "different"})
+
+
+def test_training_configuration_is_strictly_checked_against_cache_semantics(tmp_path: Path) -> None:
+    _publish_fixture(tmp_path)
+
+    assert len(LatentWAMCacheDataset(tmp_path, config=LatentWAMConfig())) == 1
+    with pytest.raises(ValueError, match="crop_size"):
+        LatentWAMCacheDataset(tmp_path, config=LatentWAMConfig(vision=VisionConfig(crop_width=224)))
+
+
+def test_frame_tokens_must_be_globally_unique(tmp_path: Path) -> None:
+    _publish_fixture(tmp_path)
+    manifest = load_cache_manifest(tmp_path)
+
+    with pytest.raises(ValueError, match="duplicate frame token"):
+        publish_cache_index(
             tmp_path,
-            features,
-            {"trajectory": torch.zeros((8, 3))},
-            rank=0,
-            expected_num_poses=8,
+            frames=[
+                FrameRecord("same", "log", 0, 0, 0),
+                FrameRecord("same", "log", 1, 0, 1),
+            ],
+            samples=[],
+            shards=manifest["shards"],
+            fingerprint={"dataset": "fixture"},
+            frames_per_shard=64,
         )
 
 
-def test_interrupted_pair_publish_cannot_look_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    features = {
-        "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
-        "geometry": torch.zeros((4, 3, 519, 2048), dtype=torch.float32),
-        "ego_status": torch.zeros((4, 8), dtype=torch.float32),
-        "schema_version": 2,
-    }
-    targets = {"trajectory": torch.zeros((8, 3))}
-    publish_public_cache(tmp_path, features, targets, rank=0, expected_num_poses=8)
+def test_complete_cache_can_be_checksum_verified_and_staged(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "local-nvme"
+    _publish_fixture(source)
 
-    real_replace = os.replace
-    replace_calls = 0
+    staged = stage_cache(source, destination)
 
-    def interrupt_second_replace(source: Path, destination: Path) -> None:
-        nonlocal replace_calls
-        replace_calls += 1
-        if replace_calls == 2:
-            raise OSError("simulated interruption")
-        real_replace(source, destination)
-
-    monkeypatch.setattr("navsim.agents.latent_wam.cache.os.replace", interrupt_second_replace)
-    with pytest.raises(OSError, match="simulated interruption"):
-        publish_public_cache(tmp_path, features, targets, rank=0, expected_num_poses=8)
-
-    assert not is_valid_public_cache(
-        tmp_path / PUBLIC_FEATURE_NAME,
-        tmp_path / PUBLIC_TARGET_NAME,
-        expected_num_poses=8,
-    )
-    cache_root = tmp_path / "cache"
-    sample_root = cache_root / "log" / "sample"
-    sample_root.mkdir(parents=True)
-    real_replace(tmp_path / PUBLIC_FEATURE_NAME, sample_root / PUBLIC_FEATURE_NAME)
-    real_replace(tmp_path / PUBLIC_TARGET_NAME, sample_root / PUBLIC_TARGET_NAME)
-    with pytest.raises(ValueError, match="generation"):
-        LatentWAMCacheDataset(cache_root)[0]
+    assert staged == destination
+    load_cache_manifest(destination, verify_files=True)
+    assert LatentWAMCacheDataset(destination)[0][0]["token"] == "sample"
