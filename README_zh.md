@@ -45,13 +45,30 @@ python scripts/convert_latent_wam_checkpoint.py \
 
 ## NAVSIM 评估
 
+论文报告的是**一阶段 ePDMS**。在原始测试场景上运行一阶段评测脚本：
+
+```bash
+python navsim/planning/script/run_pdm_score_one_stage.py \
+  agent=latent_wam_agent \
+  agent.checkpoint_path=/path/to/model.safetensors \
+  train_test_split=navtest \
+  experiment_name=latent_wam_eval
+```
+
+生成的 CSV 中，`average_all_frames` 行的 `score` 是最终一阶段 ePDMS。该评测会计算
+双帧扩展舒适度（two-frame extended comfort），但不评测合成的第二阶段场景。
+
+如需评测 NAVSIM v2 的两阶段 ePDMS，则使用：
+
 ```bash
 python navsim/planning/script/run_pdm_score.py \
   agent=latent_wam_agent \
   agent.checkpoint_path=/path/to/model.safetensors \
   train_test_split=navhard_two_stage \
-  experiment_name=latent_wam_eval
+  experiment_name=latent_wam_two_stage_eval
 ```
+
+两阶段输出中，`extended_pdm_score_combined` 行的 `score` 是最终聚合分数。
 
 ## 缓存与训练
 

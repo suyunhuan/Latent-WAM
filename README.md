@@ -71,13 +71,33 @@ exact optimizer-state training resume. See
 
 ## NAVSIM evaluation
 
+The paper reports the **single-stage ePDMS**. Run the single-stage evaluator on
+the original test scenes:
+
+```bash
+python navsim/planning/script/run_pdm_score_one_stage.py \
+  agent=latent_wam_agent \
+  agent.checkpoint_path=/path/to/model.safetensors \
+  train_test_split=navtest \
+  experiment_name=latent_wam_eval
+```
+
+The final single-stage ePDMS is the `score` in the `average_all_frames` row of
+the generated CSV. This evaluator includes two-frame extended comfort, but it
+does not evaluate the synthetic second-stage scenes.
+
+For the NAVSIM v2 two-stage ePDMS instead, use:
+
 ```bash
 python navsim/planning/script/run_pdm_score.py \
   agent=latent_wam_agent \
   agent.checkpoint_path=/path/to/model.safetensors \
   train_test_split=navhard_two_stage \
-  experiment_name=latent_wam_eval
+  experiment_name=latent_wam_two_stage_eval
 ```
+
+In the two-stage output, the final aggregate is the `score` in the
+`extended_pdm_score_combined` row.
 
 ## Cache generation and training
 
