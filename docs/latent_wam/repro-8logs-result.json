@@ -1,0 +1,76 @@
+{
+  "date": "2026-07-11",
+  "data_root": "/mnt/oss_data/navsim/Egonav/openscene-v1.1",
+  "hardware": {
+    "device_type": "PPU-ZW810E",
+    "device_count": 2,
+    "distributed_backend": "nccl"
+  },
+  "selection": [
+    {"log": "2021.05.12.19.36.12_veh-35_00005_00204", "token": "a6a284584b19599f"},
+    {"log": "2021.05.12.22.00.38_veh-35_00005_00118", "token": "9a0cdf849f305a06"},
+    {"log": "2021.05.12.22.28.35_veh-35_00025_00115", "token": "84a36ebaadcc50eb"},
+    {"log": "2021.05.12.23.36.44_veh-35_00063_00141", "token": "46dc24694f0156ad"},
+    {"log": "2021.06.07.11.59.52_veh-35_02283_02464", "token": "5f3e806f37b05f86"},
+    {"log": "2021.06.07.12.42.11_veh-38_01777_02078", "token": "e0147d268a315ade"},
+    {"log": "2021.06.07.12.54.00_veh-35_01843_02314", "token": "d5038031788a5b94"},
+    {"log": "2021.06.07.13.53.57_veh-35_01772_02032", "token": "e90137ecbc6d5cf1"}
+  ],
+  "cache_generation": {
+    "world_size": 2,
+    "assigned_per_rank": [4, 4],
+    "succeeded": 8,
+    "failed": 0,
+    "elapsed_seconds": 40.771,
+    "cache_bytes": 679022049,
+    "temporary_files_remaining": 0
+  },
+  "cache_validation": {
+    "valid_pairs": 8,
+    "unique_generations": 8,
+    "images_dtype": "torch.uint8",
+    "geometry_dtype": "torch.float32",
+    "geometry_shape": [4, 3, 519, 2048],
+    "trajectory_shape": [8, 3]
+  },
+  "distributed_resume": {
+    "invalid_model_paths_used": true,
+    "skipped": 8,
+    "failed": 0,
+    "model_lazy_load_passed": true
+  },
+  "training": {
+    "entrypoint": "navsim/planning/script/run_training.py",
+    "framework": "PyTorch Lightning DDP",
+    "world_size": 2,
+    "precision": "16-mixed",
+    "train_samples": 8,
+    "validation_samples": 8,
+    "global_training_steps": 4,
+    "step_total_losses": [14.135941505432129, 12.266290664672852, 11.39584732055664, 5.182534694671631],
+    "epoch_train": {
+      "trajectory_loss": 4.1133503913879395,
+      "wm_loss": 0.6056976318359375,
+      "geometry_loss": 0.2002064287662506,
+      "ego_status_loss": 5.825899124145508,
+      "total_loss": 10.745153427124023
+    },
+    "validation": {
+      "trajectory_loss": 6.1609649658203125,
+      "wm_loss": 0.6108890771865845,
+      "geometry_loss": 0.19929450750350952,
+      "ego_status_loss": 7.198209285736084,
+      "total_loss": 14.169358253479004
+    },
+    "all_metrics_finite": true,
+    "completed": true
+  },
+  "observations": {
+    "hydra_rank_output_dirs_differed": true,
+    "recommended_distributed_override": "Set experiment_uid explicitly for distributed training",
+    "scheduler_warning_observed": true,
+    "scheduler_lr_sequence": [0.000002, 0.0002, 0.00015025, 0.00005075],
+    "real_multi_node_tested": false,
+    "accuracy_reproduction_claimed": false
+  }
+}

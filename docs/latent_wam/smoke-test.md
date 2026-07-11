@@ -55,6 +55,26 @@ generated one WorldMirror cache, then a second run skipped both valid samples
 without loading the deliberately invalid model paths. Multi-node extraction
 was not executed on this single-node machine.
 
+## Eight-log dual-PPU reproduction
+
+A larger smoke used eight trainval scenes from eight logs. Two NCCL ranks each
+generated four camera-conditioned WorldMirror caches in 40.771 seconds. All
+eight feature/target pairs passed generation, dtype, shape, and finite-value
+validation; a second run skipped all eight while configured with deliberately
+invalid model paths.
+
+The same cache then ran through the official `run_training.py` entrypoint with
+two-device Lightning DDP, mixed precision, four global training steps, and two
+validation batches. All losses were finite; epoch train loss was
+`10.745153427124023` and validation loss was `14.169358253479004`. This proves
+the multi-log cache-to-training path runs, but is not a statistical accuracy
+reproduction. Full details are in
+[`repro-8logs-result.json`](repro-8logs-result.json).
+
+Lightning child ranks independently resolved Hydra's timestamp in this run,
+so distributed training should set `experiment_uid` explicitly to keep all
+ranks on one output path. Multi-node execution remains untested.
+
 ## Reproduction commands
 
 The commands below are the token-scoped recipe used for the verified fixture.
