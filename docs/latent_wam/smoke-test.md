@@ -49,8 +49,11 @@ The WorldMirror comparison details and reference file hashes are in
 
 Distributed coordination was checked with two local Gloo processes. The test
 covered process-group lifecycle, token agreement, balanced sharding including
-an empty rank, object gathering, and manifest generation. This machine has one
-PPU, so real multi-GPU or multi-node WorldMirror extraction was not executed.
+an empty rank, object gathering, and manifest generation. Real extraction was
+also checked with two PPU devices and the default NCCL backend: two ranks each
+generated one WorldMirror cache, then a second run skipped both valid samples
+without loading the deliberately invalid model paths. Multi-node extraction
+was not executed on this single-node machine.
 
 ## Reproduction commands
 

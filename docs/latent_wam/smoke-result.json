@@ -26,7 +26,12 @@
     "single_device_forced_cache_passed": true,
     "atomic_publish_passed": true,
     "manifest_status": "complete",
-    "real_multi_gpu_or_multi_node_extraction_tested": false
+    "real_dual_ppu_backend": "nccl",
+    "real_dual_ppu_world_size": 2,
+    "real_dual_ppu_forced_succeeded": 2,
+    "real_dual_ppu_resume_skipped": 2,
+    "real_dual_ppu_extraction_tested": true,
+    "real_multi_node_extraction_tested": false
   },
   "training_step": {
     "trajectory_loss": 0.11605432629585266,

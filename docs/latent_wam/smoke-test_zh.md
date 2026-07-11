@@ -25,8 +25,10 @@ geometry v2 cache 生成与重载、
 报告。
 
 分布式协调已使用本机两个 Gloo 进程验证，覆盖 process group 生命周期、token
-一致性、均衡分片（包括空 rank）、汇总和 manifest。当前机器只有一张 PPU，
-因此没有执行真实的双 GPU 或双节点 WorldMirror 提取。
+一致性、均衡分片（包括空 rank）、汇总和 manifest。真实提取也已使用两张 PPU
+和默认 NCCL 后端验证：两个 rank 各生成一个 WorldMirror 缓存；第二次运行在模型
+路径故意无效时仍正确跳过两个有效样本，证明没有加载模型。当前仍未执行跨节点
+WorldMirror 提取。
 
 阿里云 PPU 环境可通过 `bash scripts/setup_ppu_smoke_env.sh` 重建项目 overlay；
 它继承宿主机与硬件匹配的 torch/torchvision，其余 smoke 依赖固定在
