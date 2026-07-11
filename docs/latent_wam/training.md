@@ -36,3 +36,16 @@ The command fails unless all losses and gradients are finite, the online DINO
 encoder receives a non-zero gradient, EMA updates the target encoder, and the
 saved inference weights strictly reload to produce a finite `[1, 8, 3]`
 trajectory.
+
+## Distributed logging
+
+The parent training process pins one `experiment_uid` in
+`NAVSIM_EXPERIMENT_UID` before Lightning launches child ranks. Every rank
+therefore resolves the same `output_dir`. Global rank zero owns the main Hydra
+log, Lightning metrics, and checkpoints; each non-zero rank writes diagnostics
+to `rank_<global_rank>.log` in the same experiment directory without attaching
+to the main console or log file.
+
+An explicit `experiment_uid=my_run` command-line override remains useful when a
+human-readable or externally coordinated run identifier is required, but is no
+longer necessary merely to keep local DDP ranks on one path.

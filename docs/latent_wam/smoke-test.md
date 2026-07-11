@@ -71,9 +71,11 @@ the multi-log cache-to-training path runs, but is not a statistical accuracy
 reproduction. Full details are in
 [`repro-8logs-result.json`](repro-8logs-result.json).
 
-Lightning child ranks independently resolved Hydra's timestamp in this run,
-so distributed training should set `experiment_uid` explicitly to keep all
-ranks on one output path. Multi-node execution remains untested.
+The experiment initially exposed independent Hydra timestamp resolution in
+Lightning child ranks. The training runtime now pins the parent UID before
+launch: a two-PPU regression produced one experiment directory, a rank-zero
+`run_training.log`, and an isolated `rank_1.log`. Multi-node execution remains
+untested.
 
 ## Reproduction commands
 

@@ -66,8 +66,12 @@
     "completed": true
   },
   "observations": {
-    "hydra_rank_output_dirs_differed": true,
-    "recommended_distributed_override": "Set experiment_uid explicitly for distributed training",
+    "hydra_rank_output_dirs_originally_differed": true,
+    "shared_experiment_uid_fix_verified": true,
+    "logging_regression_world_size": 2,
+    "logging_regression_experiment_directories": 1,
+    "main_log_owner": 0,
+    "nonzero_rank_log": "rank_1.log",
     "scheduler_warning_observed": true,
     "scheduler_lr_sequence": [0.000002, 0.0002, 0.00015025, 0.00005075],
     "real_multi_node_tested": false,

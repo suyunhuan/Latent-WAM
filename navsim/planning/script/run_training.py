@@ -14,6 +14,7 @@ from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
 from navsim.agents.latent_wam.lightning_module import LatentWAMLightningModule
 from navsim.common.dataclasses import SceneFilter
 from navsim.common.dataloader import SceneLoader
+from navsim.planning.script.training_runtime import configure_rank_logging, distributed_rank, pin_experiment_uid
 from navsim.planning.training.agent_lightning_module import AgentLightningModule
 from navsim.planning.training.dataset import CacheOnlyDataset, Dataset
 
@@ -86,6 +87,9 @@ def main(cfg: DictConfig) -> None:
     Main entrypoint for training an agent.
     :param cfg: omegaconf dictionary
     """
+    pin_experiment_uid(str(cfg.experiment_uid))
+    rank = distributed_rank()
+    configure_rank_logging(Path(cfg.output_dir), rank)
     pl.seed_everything(cfg.seed, workers=True)
     logger.info(f"Global Seed set to {cfg.seed}")
 

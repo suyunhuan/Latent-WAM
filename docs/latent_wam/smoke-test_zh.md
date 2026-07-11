@@ -36,8 +36,9 @@ WorldMirror 提取。
 `run_training.py` 完成两卡 Lightning DDP 的 4 个训练 step 和 2 个验证 batch，
 所有 loss 均有限。详细结果见
 [`repro-8logs-result.json`](repro-8logs-result.json)。该实验验证工程链路，不代表
-统计意义上的精度复现；分布式训练还应显式指定 `experiment_uid`，避免各 rank
-独立解析 Hydra 时间戳而得到不同输出目录。
+统计意义上的精度复现。该实验最初发现各 rank 会独立解析 Hydra 时间戳；训练入口
+现已在启动子进程前固定父进程 UID。双 PPU 回归只生成一个实验目录，由 rank 0
+写 `run_training.log`，rank 1 独立写 `rank_1.log`。
 
 阿里云 PPU 环境可通过 `bash scripts/setup_ppu_smoke_env.sh` 重建项目 overlay；
 它继承宿主机与硬件匹配的 torch/torchvision，其余 smoke 依赖固定在
