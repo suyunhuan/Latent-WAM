@@ -7,8 +7,8 @@ import torch
 
 from navsim.agents.latent_wam.cache import (
     load_legacy_features,
+    load_public_cache_pair,
     load_trusted_pickle,
-    public_features_from_mapping,
     public_trajectory_from_mapping,
 )
 from navsim.agents.latent_wam.schema import PUBLIC_FEATURE_NAME, PUBLIC_TARGET_NAME
@@ -49,10 +49,10 @@ class LatentWAMCacheDataset(torch.utils.data.Dataset):
         feature_path, target_path = self.samples[index]
         if feature_path.name == LEGACY_FEATURE_NAME:
             features = load_legacy_features(feature_path, self.cache_path / "feature_cache")
+            target_data = load_trusted_pickle(target_path)
+            trajectory = public_trajectory_from_mapping(target_data, expected_num_poses=8)
         else:
-            features = public_features_from_mapping(load_trusted_pickle(feature_path))
-        target_data = load_trusted_pickle(target_path)
-        trajectory = public_trajectory_from_mapping(target_data, expected_num_poses=8)
+            features, trajectory = load_public_cache_pair(feature_path, target_path, expected_num_poses=8)
         return (
             {
                 "images": features.images,

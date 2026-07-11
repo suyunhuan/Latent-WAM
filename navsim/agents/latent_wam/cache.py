@@ -134,6 +134,35 @@ def public_trajectory_from_mapping(data: Mapping[str, Any], expected_num_poses: 
     return trajectory
 
 
+def load_public_cache_pair(
+    feature_path: Path,
+    target_path: Path,
+    expected_num_poses: int,
+) -> Tuple[LatentWAMFeatures, torch.Tensor]:
+    """Load and validate one transactionally consistent public cache pair.
+
+    Args:
+        feature_path: Gzip-pickle feature file.
+        target_path: Gzip-pickle target file.
+        expected_num_poses: Required trajectory length.
+
+    Returns:
+        Validated features and trajectory target.
+
+    Raises:
+        ValueError: If either payload is invalid or generations do not match.
+    """
+    feature_data = load_trusted_pickle(feature_path)
+    target_data = load_trusted_pickle(target_path)
+    features = public_features_from_mapping(feature_data)
+    trajectory = public_trajectory_from_mapping(target_data, expected_num_poses)
+    feature_generation = feature_data.get(CACHE_GENERATION_KEY)
+    target_generation = target_data.get(CACHE_GENERATION_KEY)
+    if not isinstance(feature_generation, str) or not feature_generation or feature_generation != target_generation:
+        raise ValueError("public feature and target cache generations must match")
+    return features, trajectory
+
+
 def is_valid_public_cache(feature_path: Path, target_path: Path, expected_num_poses: int) -> bool:
     """Check whether a public feature/target pair passes full validation.
 
@@ -148,14 +177,7 @@ def is_valid_public_cache(feature_path: Path, target_path: Path, expected_num_po
     if not feature_path.is_file() or not target_path.is_file():
         return False
     try:
-        feature_data = load_trusted_pickle(feature_path)
-        target_data = load_trusted_pickle(target_path)
-        feature_generation = feature_data.get(CACHE_GENERATION_KEY)
-        target_generation = target_data.get(CACHE_GENERATION_KEY)
-        if not isinstance(feature_generation, str) or not feature_generation or feature_generation != target_generation:
-            return False
-        public_features_from_mapping(feature_data)
-        public_trajectory_from_mapping(target_data, expected_num_poses)
+        load_public_cache_pair(feature_path, target_path, expected_num_poses)
     except Exception:
         return False
     return True

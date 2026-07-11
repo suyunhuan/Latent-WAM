@@ -76,18 +76,17 @@ def test_build_structural_fixture_from_one_frame(tmp_path: Path) -> None:
 
 def test_public_cache_dataset(tmp_path: Path) -> None:
     sample_root = tmp_path / "log" / "sample"
-    _dump_pickle(
-        sample_root / "latent_wam_features_v2.gz",
+    publish_public_cache(
+        sample_root,
         {
             "images": torch.zeros((4, 3, 8, 12, 3), dtype=torch.uint8),
             "geometry": torch.zeros((4, 3, 519, 2048)),
             "ego_status": torch.zeros((4, 8)),
             "schema_version": 2,
         },
-    )
-    _dump_pickle(
-        sample_root / "latent_wam_targets_v2.gz",
         {"trajectory": torch.zeros((8, 3))},
+        rank=0,
+        expected_num_poses=8,
     )
 
     dataset = LatentWAMCacheDataset(tmp_path)
@@ -198,3 +197,10 @@ def test_interrupted_pair_publish_cannot_look_valid(tmp_path: Path, monkeypatch:
         tmp_path / PUBLIC_TARGET_NAME,
         expected_num_poses=8,
     )
+    cache_root = tmp_path / "cache"
+    sample_root = cache_root / "log" / "sample"
+    sample_root.mkdir(parents=True)
+    real_replace(tmp_path / PUBLIC_FEATURE_NAME, sample_root / PUBLIC_FEATURE_NAME)
+    real_replace(tmp_path / PUBLIC_TARGET_NAME, sample_root / PUBLIC_TARGET_NAME)
+    with pytest.raises(ValueError, match="generation"):
+        LatentWAMCacheDataset(cache_root)[0]
