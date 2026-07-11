@@ -527,7 +527,7 @@ def validate_cache_compatibility(
     manifest: Mapping[str, Any],
     config: Any,
     dataset_split: str | None = None,
-    requested_logs: Iterable[str] | None = None,
+    allowed_logs: Iterable[str] | None = None,
     worldmirror_weights_sha256: str | None = None,
 ) -> None:
     """Compare cache semantics with a training configuration.
@@ -536,7 +536,7 @@ def validate_cache_compatibility(
         manifest: Validated cache manifest.
         config: Latent WAM model configuration.
         dataset_split: Optional expected NAVSIM data split.
-        requested_logs: Optional log names required by the dataset view.
+        allowed_logs: Optional complete set of train/validation log names.
         worldmirror_weights_sha256: Optional expected WorldMirror weights digest.
 
     Raises:
@@ -578,10 +578,12 @@ def validate_cache_compatibility(
     if actual != expected:
         mismatches = [key for key in expected if actual[key] != expected[key]]
         raise ValueError(f"cache is incompatible with the training configuration: {mismatches}")
-    if requested_logs is not None:
-        missing_logs = sorted(set(requested_logs).difference(fingerprint.get("logs", [])))
-        if missing_logs:
-            raise ValueError(f"cache does not contain requested training logs: {missing_logs[:3]}")
+    if allowed_logs is not None:
+        unexpected_logs = sorted(set(fingerprint.get("logs", [])).difference(allowed_logs))
+        if unexpected_logs:
+            raise ValueError(
+                f"cache contains logs outside the configured train/validation split: {unexpected_logs[:3]}"
+            )
 
 
 def validate_cache_headers(cache_root: Path, manifest: Mapping[str, Any]) -> None:

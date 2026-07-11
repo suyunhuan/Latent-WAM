@@ -128,12 +128,14 @@ def main(cfg: DictConfig) -> None:
                     "strict cache compatibility requires a local WorldMirror model.safetensors during startup"
                 )
             worldmirror_weights_sha256 = sha256_file(worldmirror_weights)
+            allowed_logs = set(cfg.train_logs) | set(cfg.val_logs)
             train_data = LatentWAMCacheDataset(
                 cache_path,
                 log_names=cfg.train_logs,
                 shard_cache_capacity=shard_cache_capacity,
                 config=agent.config,
                 dataset_split=str(cfg.train_test_split.data_split),
+                allowed_logs=allowed_logs,
                 worldmirror_weights_sha256=worldmirror_weights_sha256,
             )
             val_data = LatentWAMCacheDataset(
@@ -142,6 +144,7 @@ def main(cfg: DictConfig) -> None:
                 shard_cache_capacity=shard_cache_capacity,
                 config=agent.config,
                 dataset_split=str(cfg.train_test_split.data_split),
+                allowed_logs=allowed_logs,
                 worldmirror_weights_sha256=worldmirror_weights_sha256,
             )
         else:
