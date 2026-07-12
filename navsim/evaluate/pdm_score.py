@@ -19,7 +19,35 @@ from navsim.planning.metric_caching.metric_cache import MetricCache
 from navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer import PDMScorer
 from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
 from navsim.planning.simulation.planner.pdm_planner.utils.pdm_array_representation import ego_states_to_state_array
+from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import WeightedMetricIndex
 from navsim.traffic_agents_policies.abstract_traffic_agents_policy import AbstractTrafficAgentsPolicy
+
+
+def _apply_human_penalty_filter(pdm_result: pd.DataFrame, human_pdm_result: pd.DataFrame) -> pd.DataFrame:
+    """Apply human-violation exemptions and synchronize derived PDM metrics."""
+    skip_columns = {"multiplicative_metrics_prod", "weighted_metrics", "weighted_metrics_array", "pdm_score"}
+    modified_any = False
+    for column in human_pdm_result.columns:
+        if column not in skip_columns and human_pdm_result[column].iloc[0] == 0:
+            pdm_result.at[0, column] = 1
+            modified_any = True
+
+    if modified_any:
+        pdm_result.at[0, "multiplicative_metrics_prod"] = (
+            pdm_result.at[0, "no_at_fault_collisions"]
+            * pdm_result.at[0, "drivable_area_compliance"]
+            * pdm_result.at[0, "driving_direction_compliance"]
+            * pdm_result.at[0, "traffic_light_compliance"]
+        )
+
+        weighted_metrics = pdm_result.at[0, "weighted_metrics"].copy()
+        weighted_metrics[WeightedMetricIndex.PROGRESS] = pdm_result.at[0, "ego_progress"]
+        weighted_metrics[WeightedMetricIndex.TTC] = pdm_result.at[0, "time_to_collision_within_bound"]
+        weighted_metrics[WeightedMetricIndex.LANE_KEEPING] = pdm_result.at[0, "lane_keeping"]
+        weighted_metrics[WeightedMetricIndex.HISTORY_COMFORT] = pdm_result.at[0, "history_comfort"]
+        pdm_result.at[0, "weighted_metrics"] = weighted_metrics
+
+    return pdm_result
 
 
 def transform_trajectory(pred_trajectory: Trajectory, initial_ego_state: EgoState) -> InterpolatedTrajectory:
@@ -190,14 +218,6 @@ def pdm_score_from_interpolated_trajectory(
             human_simulated_agent_detections_tracks,
         )[0]
 
-        for column in human_pdm_result.columns:
-            if column in [
-                "multiplicative_metrics_prod",
-                "weighted_metrics",
-                "weighted_metrics_array",
-            ]:
-                continue
-            if human_pdm_result[column].iloc[0] == 0:
-                pdm_result.at[0, column] = 1
+        _apply_human_penalty_filter(pdm_result, human_pdm_result)
 
     return pdm_result, simulated_states[pred_idx]
