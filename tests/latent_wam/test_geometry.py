@@ -1,3 +1,4 @@
+import importlib.util
 from types import SimpleNamespace
 
 import numpy as np
@@ -6,6 +7,19 @@ import torch
 
 from navsim.agents.latent_wam.geometry import WorldMirrorFeatureExtractor, WorldMirrorInputs
 from navsim.planning.script.run_latent_wam_caching import build_world_mirror_inputs
+
+
+def _worldmirror_camera_utils_available() -> bool:
+    try:
+        return importlib.util.find_spec("worldmirror.src.models.utils.camera_utils") is not None
+    except ModuleNotFoundError:
+        return False
+
+
+requires_worldmirror = pytest.mark.skipif(
+    not _worldmirror_camera_utils_available(),
+    reason="requires the checked-out WorldMirror submodule",
+)
 
 
 class _Processor:
@@ -43,6 +57,7 @@ def _inputs() -> WorldMirrorInputs:
     )
 
 
+@requires_worldmirror
 def test_geometry_extractor_uses_pose_and_ray_conditions() -> None:
     extractor = WorldMirrorFeatureExtractor(
         model=_VisualEncoder(),
@@ -53,6 +68,7 @@ def test_geometry_extractor_uses_pose_and_ray_conditions() -> None:
     assert extractor(_inputs()).shape == (1, 3, 519, 2048)
 
 
+@requires_worldmirror
 def test_geometry_extractor_rejects_wrong_patch_start_index() -> None:
     extractor = WorldMirrorFeatureExtractor(
         model=_VisualEncoder(patch_start_index=6),
