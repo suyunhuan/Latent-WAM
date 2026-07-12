@@ -8,12 +8,13 @@ Latent WAM 是基于 NAVSIM v2.1.2 的相机自动驾驶研究实现。推理只
 
 ## 发布状态
 
-当前版本包含完整的推理、缓存生成、训练和 NAVSIM 一阶段评估代码。正式 Latent WAM checkpoint
-尚未包含在仓库中，将在后续单独发布。在此之前：
+当前版本包含推理、缓存生成、训练和 NAVSIM 一阶段评估代码。正式 Latent WAM checkpoint 尚未包含在
+仓库中，将在后续单独发布。在此之前：
 
 - 用户可以安装代码并从头训练；
 - 评估需要用户自行提供兼容的 `model.safetensors`；
 - 公开 agent 配置为 `agent=latent_wam_agent`；
+- 公开正式评测入口为 `scripts/evaluate_latent_wam_epdms.py`；
 - 推理输出为 `trajectory`、`all_trajectories` 和 `mode_logits`；
 - `navsim/agents/transfuser/` 是独立保留的上游 NAVSIM baseline。
 
@@ -24,9 +25,11 @@ Latent WAM 是基于 NAVSIM v2.1.2 的相机自动驾驶研究实现。推理只
 - Linux x86-64；
 - Python 3.10；
 - PyTorch 2.4.1 和 torchvision 0.19.1；
-- CUDA 12.4；推理、WorldMirror 提取、训练和评估需要 NVIDIA GPU。
+- CUDA 12.4；模型推理、WorldMirror 提取和训练需要 NVIDIA GPU；
+- PDM 仿真和 ePDMS 评分阶段使用 CPU 计算。
 
-CPU 可用于安装检查和缓存读取，但不是正式模型运行环境。
+Latent WAM 前向推理在可用时运行于 CUDA。NAVSIM PDM 仿真、几何指标、交通参与者回放以及最终
+pandas 聚合目前仍是 CPU 实现。
 
 ## 工作区目录
 
@@ -73,7 +76,7 @@ export NUPLAN_MAP_VERSION="nuplan-maps-v1.0"
 
 ```bash
 cd "$HOME/latent_wam_workspace"
-git clone --recurse-submodules https://github.com/Jinhsi555/world4drive.git latent-wam
+git clone --recurse-submodules https://github.com/Jinhsi555/Latent-WAM.git latent-wam
 cd latent-wam
 
 conda env create -f environment.yml
@@ -193,19 +196,20 @@ python navsim/planning/script/run_metric_caching.py \
 
 ```bash
 cd "$NAVSIM_DEVKIT_ROOT"
-python navsim/planning/script/run_pdm_score_one_stage.py \
-  agent=latent_wam_agent \
-  agent.checkpoint_path="$LATENT_WAM_CHECKPOINT" \
-  agent.config.vision.model_id="$DINOV2_PATH" \
-  train_test_split=navtest \
-  metric_cache_path="$NAVSIM_EXP_ROOT/metric_cache" \
-  experiment_name=latent_wam_eval
+python scripts/evaluate_latent_wam_epdms.py \
+  --checkpoint "$LATENT_WAM_CHECKPOINT" \
+  --navsim-log-path "$OPENSCENE_DATA_ROOT/navsim_logs/test" \
+  --sensor-path "$OPENSCENE_DATA_ROOT/sensor_blobs/test" \
+  --vision-model "$DINOV2_PATH" \
+  --metric-cache "$NAVSIM_EXP_ROOT/metric_cache" \
+  --output "$NAVSIM_EXP_ROOT/latent_wam_eval/navtest.csv"
 ```
 
-如果需要从 Hugging Face 自动获取 DINOv2，请删除
-`agent.config.vision.model_id="$DINOV2_PATH"`。结果写入
-`$NAVSIM_EXP_ROOT/latent_wam_eval/<experiment_uid>/`。生成 CSV 的 `average_all_frames` 行中，`score`
-列即为最终一阶段 ePDMS。
+如果需要从 Hugging Face 自动获取 DINOv2，请删除 `--vision-model` 选项。脚本复用第 1 步生成的
+metric cache，在可用 GPU 上完成模型推理，并写出标准 NAVSIM score CSV。生成 CSV 的
+`average_all_frames` 行中，`score` 列即为最终一阶段 ePDMS。短 smoke test 可以添加
+`--max-scenarios 100`；正式评测时省略该参数。默认开启 human-penalty filter，与报告中的 NAVSIM
+ePDMS 协议一致。
 
 ## 从头训练 Latent WAM
 

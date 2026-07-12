@@ -9,12 +9,13 @@ caches.
 
 ## Release status
 
-This release contains the complete inference, cache-generation, training, and single-stage NAVSIM evaluation
-code. The official Latent WAM checkpoint is not included yet and will be released separately. Until then:
+This release contains the inference, cache-generation, training, and single-stage NAVSIM evaluation code. The
+official Latent WAM checkpoint is not included yet and will be released separately. Until then:
 
 - installation and from-scratch training are available;
 - evaluation requires a compatible `model.safetensors` supplied by the user;
 - the public agent is `agent=latent_wam_agent`;
+- the public evaluation entry point is `scripts/evaluate_latent_wam_epdms.py`;
 - inference returns `trajectory`, `all_trajectories`, and `mode_logits`;
 - `navsim/agents/transfuser/` remains an independent upstream NAVSIM baseline.
 
@@ -25,10 +26,11 @@ The supported environment is:
 - Linux x86-64;
 - Python 3.10;
 - PyTorch 2.4.1 and torchvision 0.19.1;
-- CUDA 12.4 and an NVIDIA GPU for inference, WorldMirror extraction, training, and evaluation.
+- CUDA 12.4 and an NVIDIA GPU for model inference, WorldMirror extraction, and training;
+- CPU execution for the PDM simulation and ePDMS scoring stages of evaluation.
 
-CPU execution is suitable for installation checks and cache inspection, but it is not the supported model
-runtime.
+The Latent WAM forward pass runs on CUDA when available. NAVSIM PDM simulation, geometric metrics, traffic
+agent replay, and final pandas aggregation are currently CPU implementations.
 
 ## Workspace layout
 
@@ -75,7 +77,7 @@ Clone the repository with the WorldMirror submodule:
 
 ```bash
 cd "$HOME/latent_wam_workspace"
-git clone --recurse-submodules https://github.com/Jinhsi555/world4drive.git latent-wam
+git clone --recurse-submodules https://github.com/Jinhsi555/Latent-WAM.git latent-wam
 cd latent-wam
 
 conda env create -f environment.yml
@@ -198,19 +200,20 @@ and metric configuration.
 
 ```bash
 cd "$NAVSIM_DEVKIT_ROOT"
-python navsim/planning/script/run_pdm_score_one_stage.py \
-  agent=latent_wam_agent \
-  agent.checkpoint_path="$LATENT_WAM_CHECKPOINT" \
-  agent.config.vision.model_id="$DINOV2_PATH" \
-  train_test_split=navtest \
-  metric_cache_path="$NAVSIM_EXP_ROOT/metric_cache" \
-  experiment_name=latent_wam_eval
+python scripts/evaluate_latent_wam_epdms.py \
+  --checkpoint "$LATENT_WAM_CHECKPOINT" \
+  --navsim-log-path "$OPENSCENE_DATA_ROOT/navsim_logs/test" \
+  --sensor-path "$OPENSCENE_DATA_ROOT/sensor_blobs/test" \
+  --vision-model "$DINOV2_PATH" \
+  --metric-cache "$NAVSIM_EXP_ROOT/metric_cache" \
+  --output "$NAVSIM_EXP_ROOT/latent_wam_eval/navtest.csv"
 ```
 
-When DINOv2 should be resolved from Hugging Face, remove the
-`agent.config.vision.model_id="$DINOV2_PATH"` override. Results are written under
-`$NAVSIM_EXP_ROOT/latent_wam_eval/<experiment_uid>/`. The final single-stage ePDMS is the `score` value in the
-`average_all_frames` row of the generated CSV.
+When DINOv2 should be resolved from Hugging Face, remove the `--vision-model` option. The script reuses the
+metric cache from step 1, runs model inference on the available GPU, and writes a standard NAVSIM score CSV.
+The final single-stage ePDMS is the `score` value in the `average_all_frames` row. For a short smoke test, add
+`--max-scenarios 100`; omit it for the complete split. The human-penalty filter is enabled by default to match
+the reported NAVSIM ePDMS protocol.
 
 ## Train Latent WAM from scratch
 
