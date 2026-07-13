@@ -285,6 +285,12 @@ initialized from the online encoder and updated with EMA during training. See
 Keep `agent.config.geometry.model_id="$WORLD_MIRROR_PATH"` in the training configuration. Training does not load
 WorldMirror, but startup hashes its local `model.safetensors` once to reject caches generated with different geometry weights.
 
+Training skips the redundant all-shard safetensors header scan by default while retaining the fast startup checks
+described in [the cache-format specification](docs/latent_wam/cache-format.md). Set `validate_cache_headers=true`
+to audit every shard's tensor keys, shapes, and dtypes after a manual copy or modification. The opt-in audit runs
+for both train and validation datasets on every rank, does not recompute payload checksums, and can be slow on
+remote storage.
+
 Training uses locality-aware shard shuffle and an eight-entry per-worker shard LRU by default. Set
 `cache_staging_path=/local/nvme/latent_wam_cache` to checksum-copy a shared cache to node-local NVMe before
 training, or `cache_sampler_mode=global` for a global-random throughput comparison.

@@ -79,9 +79,21 @@ the NAVSIM split and selected samples, logs, temporal/camera configuration,
 image preprocessing revision, WorldMirror weight checksum, patch layout, and
 geometry dtype/shape.
 
-Cache generation and node-local staging perform full checksum validation.
-Ordinary training startup checks the manifest, file presence, sizes, and
-safetensors/Parquet structure without rescanning every shard checksum.
+Cache generation/resume and node-local staging perform full checksum
+validation. Ordinary training startup uses a faster path: it validates the
+complete manifest and fingerprint, checks every recorded file's presence and
+size, reads the Parquet indices, and checks semantic compatibility with the
+model and configured split. It does not rescan every safetensors header or
+payload checksum.
+
+Set `validate_cache_headers=true` on the training command to additionally open
+every safetensors header and verify tensor keys, shapes, and dtypes against the
+manifest. This is useful after manually copying or modifying a cache, but is an
+O(number of shards) audit. Dataset construction performs it once for the train
+dataset and once for the validation dataset on every distributed rank, so it
+can be especially slow on remote storage. It does not recompute payload
+checksums; use checksum-verified cache generation/resume or
+`cache_staging_path` when payload integrity must also be re-established.
 
 ## Distributed generation and resume
 

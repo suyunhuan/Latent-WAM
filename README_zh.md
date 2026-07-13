@@ -279,6 +279,12 @@ online encoder 初始化，并在训练中通过 EMA 更新。loss 定义和分�
 训练配置中应保留 `agent.config.geometry.model_id="$WORLD_MIRROR_PATH"`。训练不会加载 WorldMirror，
 但启动时会对本地 `model.safetensors` 计算一次 checksum，以拒绝由不同几何权重生成的缓存。
 
+训练默认跳过重复的全量 safetensors shard header 扫描，同时保留
+[缓存格式说明](docs/latent_wam/cache-format.md)中的快速启动检查。缓存被手动复制或修改后，
+可设置 `validate_cache_headers=true`，逐个检查 shard 的 tensor key、shape 和 dtype。这个可选审计
+会在每个 rank 上分别为 train 和 validation dataset 执行，不会重新计算 payload checksum，
+在远程存储上可能较慢。
+
 训练默认使用 locality-aware shard shuffle 和每 worker 8-entry shard LRU。设置
 `cache_staging_path=/local/nvme/latent_wam_cache` 可在训练前将共享缓存经 checksum 校验复制到节点本地
 NVMe；设置 `cache_sampler_mode=global` 可运行全局随机吞吐对照。
