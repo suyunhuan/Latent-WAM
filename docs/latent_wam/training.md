@@ -42,6 +42,21 @@ The public safetensors file intentionally omits optimizer and target-encoder
 state. It can initialize fine-tuning, but cannot reproduce an exact Lightning
 resume from epoch 84.
 
+## Multi-node launcher
+
+Run `scripts/training/run_latent_wam_training_multi_node.sh` once on every node.
+The launcher maps `NNODES`, `NPROC_PER_NODE`, `NODE_RANK`, `MASTER_ADDR`, and
+`MASTER_PORT` to `torchrun`, with the same `MLP_*` fallbacks as distributed
+cache generation. `BATCH_SIZE` is per device; gradient accumulation also
+multiplies the effective global batch size.
+
+The launcher defaults to the experiment UID and concrete cache/model paths used
+by the verified local run; override `NAVSIM_EXPERIMENT_UID` when starting a new
+experiment. The cache, experiment root, checkpoint path, and local model paths
+must resolve consistently across nodes. Extra command-line arguments are
+passed through as Hydra overrides, including `resume_ckpt_path` for exact
+Lightning resume.
+
 For a one-sample optimizer and EMA check after generating a cache:
 
 ```bash

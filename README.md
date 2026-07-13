@@ -277,6 +277,24 @@ python navsim/planning/script/run_training.py \
   experiment_name=latent_wam_train
 ```
 
+For multi-node training, run the launcher once on every node with the same shared cache/output paths. The launcher
+defaults match the verified local run: BF16, batch size 8 per device, 12 DataLoader workers, 25 epochs, learning rate
+`2e-4`, and cache path `/mnt/oss_data/latent-wam/cache`. `BATCH_SIZE` is per device, so the global batch size is
+`NNODES * NPROC_PER_NODE * BATCH_SIZE * ACCUMULATE_GRAD_BATCHES`.
+
+```bash
+cd "$NAVSIM_DEVKIT_ROOT"
+NNODES=2 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
+MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
+bash scripts/training/run_latent_wam_training_multi_node.sh
+```
+
+The launcher accepts the same `MLP_WORKER_NUM`, `MLP_ROLE_INDEX`, `MLP_WORKER_0_HOST`, and `MLP_WORKER_0_PORT`
+fallbacks as distributed cache generation. It uses the same default experiment UID as the local run; set
+`NAVSIM_EXPERIMENT_UID` explicitly when starting a new experiment. All nodes must resolve `NAVSIM_EXP_ROOT`,
+`CACHE_PATH`, and model paths consistently. Additional arguments are forwarded as Hydra overrides; for example,
+append `resume_ckpt_path=/shared/checkpoints/last.ckpt` to resume a Lightning checkpoint.
+
 Remove the local DINOv2 override to use `facebook/dinov2-base`. Training outputs, Lightning logs, and periodic
 checkpoints are stored under `$NAVSIM_EXP_ROOT/latent_wam_train/<experiment_uid>/`. The target DINO encoder is
 initialized from the online encoder and updated with EMA during training. See

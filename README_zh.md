@@ -271,6 +271,25 @@ python navsim/planning/script/run_training.py \
   experiment_name=latent_wam_train
 ```
 
+多机训练时，在每个节点各执行一次启动脚本，并使用相同的共享缓存和输出路径。
+脚本默认值与已验证的本地训练一致：BF16、每卡 batch size 8、每个 DataLoader 进程
+12 个 worker、25 个 epoch、学习率 `2e-4`，cache 路径为 `/mnt/oss_data/latent-wam/cache`。
+`BATCH_SIZE` 是每卡 batch size，因此 global batch size 为
+`NNODES * NPROC_PER_NODE * BATCH_SIZE * ACCUMULATE_GRAD_BATCHES`。
+
+```bash
+cd "$NAVSIM_DEVKIT_ROOT"
+NNODES=2 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
+MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
+bash scripts/training/run_latent_wam_training_multi_node.sh
+```
+
+该脚本兼容分布式缓存脚本使用的 `MLP_WORKER_NUM`、`MLP_ROLE_INDEX`、`MLP_WORKER_0_HOST` 和
+`MLP_WORKER_0_PORT` fallback。脚本默认使用与本地训练相同的 experiment UID；启动新实验时显式
+设置 `NAVSIM_EXPERIMENT_UID`。所有节点必须一致地解析 `NAVSIM_EXP_ROOT`、`CACHE_PATH` 和模型路径。
+脚本末尾的额外参数会作为 Hydra override 传递；例如添加
+`resume_ckpt_path=/shared/checkpoints/last.ckpt` 可恢复 Lightning checkpoint。
+
 删除本地 DINOv2 override 即可使用 `facebook/dinov2-base`。训练产物、Lightning 日志和周期性
 checkpoint 保存在 `$NAVSIM_EXP_ROOT/latent_wam_train/<experiment_uid>/`。target DINO encoder 从
 online encoder 初始化，并在训练中通过 EMA 更新。loss 定义和分布式日志行为见
