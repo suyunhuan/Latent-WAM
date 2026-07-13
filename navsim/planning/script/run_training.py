@@ -129,6 +129,7 @@ def main(cfg: DictConfig) -> None:
                 )
             worldmirror_weights_sha256 = sha256_file(worldmirror_weights)
             allowed_logs = set(cfg.train_logs) | set(cfg.val_logs)
+            validate_headers = bool(cfg.get("validate_cache_headers", True))
             train_data = LatentWAMCacheDataset(
                 cache_path,
                 log_names=cfg.train_logs,
@@ -137,6 +138,7 @@ def main(cfg: DictConfig) -> None:
                 dataset_split=str(cfg.train_test_split.data_split),
                 allowed_logs=allowed_logs,
                 worldmirror_weights_sha256=worldmirror_weights_sha256,
+                validate_headers=validate_headers,
             )
             val_data = LatentWAMCacheDataset(
                 cache_path,
@@ -146,6 +148,7 @@ def main(cfg: DictConfig) -> None:
                 dataset_split=str(cfg.train_test_split.data_split),
                 allowed_logs=allowed_logs,
                 worldmirror_weights_sha256=worldmirror_weights_sha256,
+                validate_headers=validate_headers,
             )
         else:
             train_data = CacheOnlyDataset(

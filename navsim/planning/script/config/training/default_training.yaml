@@ -23,6 +23,7 @@ resume_ckpt_path: null
 cache_sampler_mode: locality
 cache_shard_lru: 8
 cache_staging_path: null
+validate_cache_headers: false # cache generation validates shard structure; skip the redundant training-time scan
 
 dataloader:
   params:

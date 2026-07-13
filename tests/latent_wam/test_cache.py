@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 import torch
 
+import navsim.agents.latent_wam.dataset as dataset_module
+
 from navsim.agents.latent_wam.cache import (
     CACHE_FORMAT,
     SCHEMA_REVISION,
@@ -128,6 +130,17 @@ def test_training_configuration_is_strictly_checked_against_cache_semantics(tmp_
     assert len(LatentWAMCacheDataset(tmp_path, config=LatentWAMConfig())) == 1
     with pytest.raises(ValueError, match="crop_size"):
         LatentWAMCacheDataset(tmp_path, config=LatentWAMConfig(vision=VisionConfig(crop_width=224)))
+
+
+def test_training_cache_can_skip_redundant_header_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _publish_fixture(tmp_path)
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("header validation should be skipped")
+
+    monkeypatch.setattr(dataset_module, "validate_cache_headers", fail_if_called)
+
+    assert len(LatentWAMCacheDataset(tmp_path, validate_headers=False)) == 1
 
 
 def test_frame_tokens_must_be_globally_unique(tmp_path: Path) -> None:

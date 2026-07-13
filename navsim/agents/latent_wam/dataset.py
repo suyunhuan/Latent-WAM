@@ -59,6 +59,7 @@ class LatentWAMCacheDataset(torch.utils.data.Dataset):
         dataset_split: Optional expected NAVSIM split.
         allowed_logs: Optional complete set of train/validation logs.
         worldmirror_weights_sha256: Optional expected geometry-weight digest.
+        validate_headers: Whether to inspect every safetensors header during startup.
     """
 
     def __init__(
@@ -71,6 +72,7 @@ class LatentWAMCacheDataset(torch.utils.data.Dataset):
         dataset_split: str | None = None,
         allowed_logs: Iterable[str] | None = None,
         worldmirror_weights_sha256: str | None = None,
+        validate_headers: bool = True,
     ) -> None:
         import pyarrow.parquet as pq
 
@@ -84,7 +86,8 @@ class LatentWAMCacheDataset(torch.utils.data.Dataset):
                 allowed_logs=allowed_logs,
                 worldmirror_weights_sha256=worldmirror_weights_sha256,
             )
-        validate_cache_headers(self.cache_path, self.manifest)
+        if validate_headers:
+            validate_cache_headers(self.cache_path, self.manifest)
         self.shards = {int(shard["id"]): shard for shard in self.manifest["shards"]}
         frame_table = pq.read_table(self.cache_path / self.manifest["indices"]["frames"]["path"])
         sample_table = pq.read_table(self.cache_path / self.manifest["indices"]["samples"]["path"])
