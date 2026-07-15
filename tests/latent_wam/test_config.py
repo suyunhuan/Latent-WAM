@@ -1,8 +1,14 @@
+from pathlib import Path
+
 import pytest
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from navsim.agents.latent_wam.config import DataConfig, LatentWAMConfig, TransformerConfig
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+TRAINING_CONFIG_ROOT = REPOSITORY_ROOT / "navsim/planning/script/config/training"
 
 
 def test_released_checkpoint_dimensions() -> None:
@@ -31,3 +37,14 @@ def test_hydra_config_builds_typed_config() -> None:
 
     assert isinstance(config, LatentWAMConfig)
     assert config.data.time_offsets_s == (-1.5, 0.0, 2.0, 4.0)
+
+
+def test_all_trainval_log_split_combines_default_train_and_validation_logs() -> None:
+    default_split = OmegaConf.load(TRAINING_CONFIG_ROOT / "default_train_val_test_log_split.yaml")
+    all_trainval_split = OmegaConf.load(TRAINING_CONFIG_ROOT / "all_train_val_test_log_split.yaml")
+
+    expected_train_logs = set(default_split.train_logs) | set(default_split.val_logs)
+    assert set(all_trainval_split.train_logs) == expected_train_logs
+    assert len(all_trainval_split.train_logs) == len(default_split.train_logs) + len(default_split.val_logs)
+    assert all_trainval_split.val_logs == default_split.val_logs
+    assert all_trainval_split.test_logs == default_split.test_logs

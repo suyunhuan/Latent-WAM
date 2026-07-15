@@ -20,7 +20,13 @@ NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 NODE_RANK="${NODE_RANK:-${MLP_ROLE_INDEX:-0}}"
 MASTER_ADDR="${MASTER_ADDR:-${MLP_WORKER_0_HOST:-127.0.0.1}}"
 MASTER_PORT="${MASTER_PORT:-${MLP_WORKER_0_PORT:-29500}}"
-TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-navtrain}"
+TRAINING_CONFIG="${TRAINING_CONFIG:-default_training}"
+if [[ "$TRAINING_CONFIG" == "all_navtrain_training" ]]; then
+  DEFAULT_TRAIN_TEST_SPLIT="trainval"
+else
+  DEFAULT_TRAIN_TEST_SPLIT="navtrain"
+fi
+TRAIN_TEST_SPLIT="${TRAIN_TEST_SPLIT:-$DEFAULT_TRAIN_TEST_SPLIT}"
 CACHE_PATH="${CACHE_PATH:-$RUN_ROOT/cache}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-training}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
@@ -54,6 +60,7 @@ fi
   --master_addr="$MASTER_ADDR" \
   --master_port="$MASTER_PORT" \
   "$WORKSPACE/navsim/planning/script/run_training.py" \
+  --config-name="$TRAINING_CONFIG" \
   agent=latent_wam_agent \
   agent.build_target_encoder=true \
   agent.config.training.learning_rate="$LEARNING_RATE" \

@@ -24,6 +24,8 @@ def _base_environment(tmp_path: Path) -> dict[str, str]:
         "NODE_RANK",
         "MASTER_ADDR",
         "MASTER_PORT",
+        "TRAINING_CONFIG",
+        "TRAIN_TEST_SPLIT",
         "WORLD_MIRROR_PATH",
         "DINOV2_PATH",
         "CACHE_STAGING_PATH",
@@ -67,6 +69,8 @@ def test_multi_node_launcher_maps_cluster_environment_to_torchrun(tmp_path: Path
         str(REPOSITORY_ROOT / "navsim/planning/script/run_training.py"),
     ]
     assert "trainer.params.devices=8" in arguments
+    assert "--config-name=default_training" in arguments
+    assert "train_test_split=navtrain" in arguments
     assert "trainer.params.num_nodes=2" in arguments
     assert "dataloader.params.batch_size=8" in arguments
     assert "experiment_uid=navtrain_per_device_bs8_e25_lr2e-4" in arguments
@@ -93,3 +97,19 @@ def test_multi_node_launcher_allows_explicit_shared_experiment_uid(tmp_path: Pat
     assert result.returncode == 0
     arguments = (tmp_path / "torchrun-args.txt").read_text(encoding="utf-8").splitlines()
     assert "experiment_uid=shared-run" in arguments
+
+
+def test_multi_node_launcher_selects_trainval_training_config(tmp_path: Path) -> None:
+    environment = _base_environment(tmp_path)
+    environment["TRAINING_CONFIG"] = "all_navtrain_training"
+
+    subprocess.run(
+        ["bash", str(LAUNCHER)],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        check=True,
+    )
+
+    arguments = (tmp_path / "torchrun-args.txt").read_text(encoding="utf-8").splitlines()
+    assert "--config-name=all_navtrain_training" in arguments
+    assert "train_test_split=trainval" in arguments
