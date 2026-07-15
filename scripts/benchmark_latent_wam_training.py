@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import math
 import os
@@ -17,11 +18,12 @@ import psutil
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from navsim.agents.latent_wam.agent import LatentWAMAgent
 from navsim.agents.latent_wam.config import LatentWAMConfig, VisionConfig
 from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
+from navsim.agents.latent_wam.sampler import LocalityAwareDistributedSampler
 
 Batch = Tuple[Dict[str, object], Dict[str, torch.Tensor]]
 
@@ -42,13 +44,21 @@ class _TrainingStepModule(nn.Module):
 class RepeatedDataset(Dataset[Batch]):
     """Repeat a non-empty cache dataset to a requested benchmark length."""
 
-    def __init__(self, dataset: Dataset[Batch], length: int) -> None:
+    def __init__(
+        self,
+        dataset: Dataset[Batch],
+        length: int,
+        sample_locality: Sequence[int] | None = None,
+    ) -> None:
         if len(dataset) == 0:
             raise ValueError("benchmark cache dataset must not be empty")
         if length < 1:
             raise ValueError("benchmark length must be positive")
         self.dataset = dataset
         self.length = length
+        self.sample_locality = None if sample_locality is None else [
+            int(sample_locality[index % len(sample_locality)]) for index in range(length)
+        ]
 
     def __len__(self) -> int:
         return self.length
@@ -68,7 +78,43 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--warmup-steps", type=int, default=20)
     parser.add_argument("--measure-steps", type=int, default=100)
+    parser.add_argument("--log-every-steps", type=int, default=0)
+    parser.add_argument("--sampler-mode", choices=("sequential", "locality"), default="sequential")
+    parser.add_argument("--precision", choices=("fp32", "bf16-mixed"), default="fp32")
+    parser.add_argument(
+        "--sample-token",
+        help="Repeat one real cache sample with this token instead of walking the full cache.",
+    )
     return parser.parse_args()
+
+
+def select_sample(dataset: Dataset[Batch], token: str) -> Dataset[Batch]:
+    """Select one cache sample by token without loading every tensor payload."""
+    samples = getattr(dataset, "samples", None)
+    if samples is None:
+        raise ValueError("cache dataset does not expose sample metadata")
+    for index, sample in enumerate(samples):
+        if isinstance(sample, dict):
+            sample_token = sample.get("token")
+        elif isinstance(sample, tuple) and sample:
+            sample_token = Path(sample[0]).parent.name
+        else:
+            sample_token = None
+        if sample_token == token:
+            return Subset(dataset, [index])
+    raise ValueError(f"sample token is not present in cache: {token}")
+
+
+def _sample_locality(dataset: Dataset[Batch]) -> Sequence[int] | None:
+    """Return sample-to-shard locality metadata through simple dataset wrappers."""
+    locality = getattr(dataset, "sample_locality", None)
+    if locality is not None:
+        return locality
+    if isinstance(dataset, Subset):
+        parent_locality = _sample_locality(dataset.dataset)
+        if parent_locality is not None:
+            return [parent_locality[index] for index in dataset.indices]
+    return None
 
 
 def _percentile(values: Sequence[float], fraction: float) -> float:
@@ -108,14 +154,33 @@ def _next_timed(iterator: Iterator[Batch]) -> Tuple[Batch, float]:
 
 def _build_loader(args: argparse.Namespace) -> DataLoader[Batch]:
     source = LatentWAMCacheDataset(args.cache_path)
+    if args.sample_token:
+        source = select_sample(source, args.sample_token)
     total_samples = (args.warmup_steps + args.measure_steps) * args.batch_size
-    dataset = RepeatedDataset(source, total_samples)
+    if args.sampler_mode == "locality" and args.sample_token:
+        raise ValueError("locality sampler mode cannot be combined with --sample-token")
+    source_locality = _sample_locality(source)
+    if args.sampler_mode == "locality":
+        if source_locality is None:
+            raise ValueError("locality sampler mode requires sample_locality metadata")
+        dataset: Dataset[Batch] = source
+    else:
+        dataset = RepeatedDataset(source, total_samples, sample_locality=source_locality)
     parameters: Dict[str, object] = {
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "shuffle": False,
         "pin_memory": torch.cuda.is_available(),
     }
+    if args.sampler_mode == "locality":
+        parameters["sampler"] = LocalityAwareDistributedSampler(
+            source_locality,
+            mode="locality",
+            shuffle=True,
+            seed=0,
+            rank=int(os.environ.get("RANK", "0")),
+            world_size=int(os.environ.get("WORLD_SIZE", "1")),
+        )
     if args.num_workers:
         parameters["prefetch_factor"] = 1
         parameters["persistent_workers"] = True
@@ -125,8 +190,8 @@ def _build_loader(args: argparse.Namespace) -> DataLoader[Batch]:
 def _build_agent(
     args: argparse.Namespace,
 ) -> Tuple[LatentWAMAgent, nn.Module, torch.optim.Optimizer]:
-    if args.checkpoint is None or args.vision_model is None:
-        raise ValueError("train mode requires --checkpoint and --vision-model")
+    if args.vision_model is None:
+        raise ValueError("train mode requires --vision-model")
     if not torch.cuda.is_available():
         raise RuntimeError("train mode requires a CUDA-compatible accelerator")
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -135,7 +200,7 @@ def _build_agent(
     config = LatentWAMConfig(vision=VisionConfig(model_id=str(args.vision_model)))
     agent = LatentWAMAgent(
         config=config,
-        checkpoint_path=str(args.checkpoint),
+        checkpoint_path=str(args.checkpoint) if args.checkpoint is not None else None,
         build_target_encoder=True,
     )
     agent.initialize()
@@ -159,13 +224,20 @@ def _optimization_step(
     training_module: nn.Module,
     optimizer: torch.optim.Optimizer,
     batch: Batch,
+    precision: str,
 ) -> Dict[str, float]:
     features, targets = batch
     device = next(agent.model.parameters()).device
     device_targets = {key: value.to(device, non_blocking=True) for key, value in targets.items()}
     optimizer.zero_grad(set_to_none=True)
     forward_start = time.perf_counter()
-    loss = training_module(features, device_targets)
+    autocast_context = (
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        if precision == "bf16-mixed"
+        else nullcontext()
+    )
+    with autocast_context:
+        loss = training_module(features, device_targets)
     _synchronize()
     forward_seconds = time.perf_counter() - forward_start
     backward_start = time.perf_counter()
@@ -216,7 +288,7 @@ def _run(args: argparse.Namespace) -> Dict[str, object]:
             assert agent is not None and training_module is not None and optimizer is not None
             _synchronize()
             step_start = time.perf_counter()
-            phases = _optimization_step(agent, training_module, optimizer, batch)
+            phases = _optimization_step(agent, training_module, optimizer, batch, args.precision)
             _synchronize()
             step_duration = time.perf_counter() - step_start
         else:
@@ -227,16 +299,32 @@ def _run(args: argparse.Namespace) -> Dict[str, object]:
             if args.mode == "train":
                 for name, duration in phases.items():
                     phase_seconds[name].append(duration)
+        completed = step + 1
+        if args.log_every_steps and completed % args.log_every_steps == 0:
+            phase = "warmup" if completed <= args.warmup_steps else "measure"
+            measured = len(step_seconds)
+            throughput = measured * args.batch_size / sum(step_seconds) if measured else 0.0
+            print(
+                f"progress={completed}/{args.warmup_steps + args.measure_steps} phase={phase} "
+                f"measured_steps={measured} samples_per_second={throughput:.3f}",
+                flush=True,
+            )
 
     total_step_seconds = sum(step_seconds)
     measured_rss_end, measured_read_end = _process_io_and_memory()
+    source_dataset = loader.dataset
+    if isinstance(source_dataset, RepeatedDataset):
+        source_dataset = source_dataset.dataset
     report = {
         "mode": args.mode,
         "cache_path": str(args.cache_path.resolve()),
-        "source_samples": len(LatentWAMCacheDataset(args.cache_path)),
-        "repeated_source": True,
+        "source_samples": len(source_dataset),
+        "repeated_source": isinstance(loader.dataset, RepeatedDataset),
+        "sample_token": args.sample_token,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
+        "sampler_mode": args.sampler_mode,
+        "precision": args.precision,
         "warmup_steps": args.warmup_steps,
         "measure_steps": args.measure_steps,
         "data_wait_seconds": summarize_seconds(data_seconds),
@@ -265,7 +353,13 @@ def _run(args: argparse.Namespace) -> Dict[str, object]:
 
 def main() -> None:
     args = _arguments()
-    if args.batch_size < 1 or args.num_workers < 0 or args.warmup_steps < 0 or args.measure_steps < 1:
+    if (
+        args.batch_size < 1
+        or args.num_workers < 0
+        or args.warmup_steps < 0
+        or args.measure_steps < 1
+        or args.log_every_steps < 0
+    ):
         raise ValueError("invalid benchmark iteration or dataloader setting")
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     owns_process_group = world_size > 1 and not dist.is_initialized()
