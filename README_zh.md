@@ -211,6 +211,23 @@ metric cache，在可用 GPU 上完成模型推理，并写出标准 NAVSIM scor
 `--max-scenarios 100`；正式评测时省略该参数。默认开启 human-penalty filter，与报告中的 NAVSIM
 ePDMS 协议一致。
 
+多加速卡评测可使用从已验证并行评测流程中正式化的启动脚本。该脚本会把推理任务分配到
+指定设备，按 split 顺序合并轨迹，并将 PDM 评分调度到多个 CPU worker：
+
+```bash
+cd "$NAVSIM_DEVKIT_ROOT"
+LATENT_WAM_CHECKPOINT="$LATENT_WAM_CHECKPOINT" \
+DINOV2_PATH="$DINOV2_PATH" \
+EVALUATION_DEVICES=0,1 PDM_WORKERS=8 \
+bash scripts/evaluation/run_latent_wam_epdms_parallel.sh
+```
+
+启动脚本会根据自身位置解析仓库路径，并要求设置 `NAVSIM_EXP_ROOT`、`OPENSCENE_DATA_ROOT` 和
+`LATENT_WAM_CHECKPOINT`。如不使用 `NAVSIM_EXP_ROOT` 下的默认位置，可覆盖 `METRIC_CACHE_PATH` 或
+`EVALUATION_OUTPUT`。`INFERENCE_WORKERS_PER_DEVICE`、`INFERENCE_BATCH_SIZE`、`PDM_CHUNK_SIZE` 和
+`PDM_THREADS_PER_WORKER` 用于控制主要并行参数。脚本末尾的额外参数会传递给
+`scripts/evaluate_latent_wam_epdms_parallel.py`；添加 `--max-scenarios 100` 可执行短 smoke test。
+
 ## 从头训练 Latent WAM
 
 从头训练不需要正式 Latent WAM checkpoint，但需要 NAVSIM `navtrain` 数据、DINOv2-Base、

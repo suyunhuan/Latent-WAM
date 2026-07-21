@@ -75,8 +75,8 @@ def test_multi_node_launcher_maps_cluster_environment_to_torchrun(tmp_path: Path
     assert "dataloader.params.batch_size=8" in arguments
     assert "experiment_uid=navtrain_per_device_bs8_e25_lr2e-4" in arguments
     assert "cache_path=/mnt/oss_data/latent-wam/cache" in arguments
-    assert "agent.config.geometry.model_id=/mnt/workspace/wlb/world4drive/checkpoints/HunyuanWorld-Mirror" in arguments
-    assert "agent.config.vision.model_id=/mnt/workspace/wlb/world4drive/checkpoints/dinov2-base" in arguments
+    assert f"agent.config.geometry.model_id={REPOSITORY_ROOT / 'checkpoints/HunyuanWorld-Mirror'}" in arguments
+    assert f"agent.config.vision.model_id={REPOSITORY_ROOT / 'checkpoints/dinov2-base'}" in arguments
     assert arguments[-1] == "trainer.params.limit_train_batches=5"
 
 

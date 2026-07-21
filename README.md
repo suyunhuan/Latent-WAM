@@ -215,6 +215,25 @@ The final single-stage ePDMS is the `score` value in the `average_all_frames` ro
 `--max-scenarios 100`; omit it for the complete split. The human-penalty filter is enabled by default to match
 the reported NAVSIM ePDMS protocol.
 
+For multi-accelerator evaluation, use the formal launcher extracted from the verified parallel evaluation
+workflow. It partitions inference across the selected devices, merges trajectories in split order, and schedules
+PDM scoring across CPU workers:
+
+```bash
+cd "$NAVSIM_DEVKIT_ROOT"
+LATENT_WAM_CHECKPOINT="$LATENT_WAM_CHECKPOINT" \
+DINOV2_PATH="$DINOV2_PATH" \
+EVALUATION_DEVICES=0,1 PDM_WORKERS=8 \
+bash scripts/evaluation/run_latent_wam_epdms_parallel.sh
+```
+
+The launcher derives the repository path from its own location and requires `NAVSIM_EXP_ROOT`,
+`OPENSCENE_DATA_ROOT`, and `LATENT_WAM_CHECKPOINT`. Override `METRIC_CACHE_PATH` or `EVALUATION_OUTPUT` when the
+default locations under `NAVSIM_EXP_ROOT` are not suitable. `INFERENCE_WORKERS_PER_DEVICE`,
+`INFERENCE_BATCH_SIZE`, `PDM_CHUNK_SIZE`, and `PDM_THREADS_PER_WORKER` expose the main parallelism controls. Extra
+arguments are forwarded to `scripts/evaluate_latent_wam_epdms_parallel.py`; append `--max-scenarios 100` for a
+short smoke test.
+
 ## Train Latent WAM from scratch
 
 Training does not require the official Latent WAM checkpoint. It requires the NAVSIM `navtrain` data,

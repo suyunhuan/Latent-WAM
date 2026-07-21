@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKSPACE="${NAVSIM_DEVKIT_ROOT:-/mnt/workspace/wlb/world4drive}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_WORKSPACE="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+WORKSPACE="${NAVSIM_DEVKIT_ROOT:-$DEFAULT_WORKSPACE}"
 RUN_ROOT="${NAVSIM_EXP_ROOT:-/mnt/oss_data/latent-wam}"
 DATA_ROOT="${OPENSCENE_DATA_ROOT:-/mnt/workspace/wlb/Egonav/openscene-v1.1}"
 PYTHON="${PYTHON_BIN:-$WORKSPACE/.venv-ppu-smoke/bin/python}"
