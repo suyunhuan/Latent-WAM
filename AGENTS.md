@@ -45,7 +45,7 @@ CPU CI 覆盖配置、缓存和 checkpoint 映射；GPU smoke test 覆盖正式�
 - 训练时间点固定为 `[-1.5, 0.0, 2.0, 4.0]` 秒。
 - 只保留 teacher-forcing `forward_train`，不要重新引入 curriculum/refine 分支。
 - checkpoint 迁移必须显式列出 rename/drop 规则，并保持严格键验证。
-- 旧 gzip-pickle 缓存只能作为可信输入读取；公开格式必须带 schema version。
+- 旧 gzip-pickle 缓存只能作为可信输入读取；公开格式使用稳定的 format identifier 和显式结构校验。
 - 最终实现的 loss 行为是 WTA L1 trajectory、MSE world model、cosine geometry、
   command/velocity/acceleration ego-status loss。
 

@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from navsim.agents.abstract_agent import AbstractAgent
 from navsim.agents.latent_wam.agent import LatentWAMAgent
-from navsim.agents.latent_wam.cache import sha256_file, stage_cache
+from navsim.agents.latent_wam.cache import stage_cache
 from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
 from navsim.agents.latent_wam.lightning_module import LatentWAMLightningModule
 from navsim.agents.latent_wam.sampler import LocalityAwareDistributedSampler
@@ -122,12 +122,6 @@ def main(cfg: DictConfig) -> None:
             if cfg.get("cache_staging_path"):
                 cache_path = stage_cache(cache_path, Path(cfg.cache_staging_path))
             shard_cache_capacity = int(cfg.get("cache_shard_lru", 8))
-            worldmirror_weights = Path(agent.config.geometry.model_id).expanduser() / "model.safetensors"
-            if not worldmirror_weights.is_file():
-                raise ValueError(
-                    "strict cache compatibility requires a local WorldMirror model.safetensors during startup"
-                )
-            worldmirror_weights_sha256 = sha256_file(worldmirror_weights)
             allowed_logs = set(cfg.train_logs) | set(cfg.val_logs)
             validate_headers = bool(cfg.get("validate_cache_headers", True))
             train_data = LatentWAMCacheDataset(
@@ -137,7 +131,6 @@ def main(cfg: DictConfig) -> None:
                 config=agent.config,
                 dataset_split=str(cfg.train_test_split.data_split),
                 allowed_logs=allowed_logs,
-                worldmirror_weights_sha256=worldmirror_weights_sha256,
                 validate_headers=validate_headers,
             )
             val_data = LatentWAMCacheDataset(
@@ -147,7 +140,6 @@ def main(cfg: DictConfig) -> None:
                 config=agent.config,
                 dataset_split=str(cfg.train_test_split.data_split),
                 allowed_logs=allowed_logs,
-                worldmirror_weights_sha256=worldmirror_weights_sha256,
                 validate_headers=validate_headers,
             )
         else:

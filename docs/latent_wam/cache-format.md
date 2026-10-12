@@ -22,8 +22,10 @@ cache/
 ```
 
 `manifest.json` is published last. A cache without a complete final manifest
-is never accepted for training. The manifest format identifier is
-`latent_wam_sharded_cache`; its initial internal schema revision is `1`.
+is never accepted for training. Its stable format identifier is
+`latent_wam_sharded_cache`. Readers validate the explicit structure they use
+and ignore unknown metadata, so existing tensor and index payloads remain
+directly usable.
 
 ## Frame store
 
@@ -73,45 +75,44 @@ status tensors.
 
 ## Integrity and identity
 
-The manifest records sizes, shapes, dtypes, and SHA-256 checksums for every
-Parquet and safetensors file. It also records a semantic fingerprint covering
-the NAVSIM split and selected samples, logs, temporal/camera configuration,
-image preprocessing revision, WorldMirror weight checksum, patch layout, and
+The manifest records paths, sizes, shapes, and dtypes for every Parquet and
+safetensors file. It also records an explicit semantic fingerprint covering the
+NAVSIM split, sample count, logs, temporal/camera configuration, image
+preprocessing revision, WorldMirror model identifier, patch layout, and
 geometry dtype/shape.
 
-Cache generation/resume and node-local staging perform full checksum
-validation. Ordinary training startup uses a faster path: it validates the
-complete manifest and fingerprint, checks every recorded file's presence and
-size, reads the Parquet indices, and checks semantic compatibility with the
-model and configured split. It does not rescan every safetensors header or
-payload checksum.
+Cache generation/resume, ordinary training startup, and node-local staging
+check the complete manifest plus every recorded file's presence and size.
+Training also reads the Parquet indices and compares the explicit semantic
+fields with the model and configured split. Tensor contents are validated when
+they are loaded.
 
 Set `validate_cache_headers=true` on the training command to additionally open
 every safetensors header and verify tensor keys, shapes, and dtypes against the
 manifest. This is useful after manually copying or modifying a cache, but is an
 O(number of shards) audit. Dataset construction performs it once for the train
 dataset and once for the validation dataset on every distributed rank, so it
-can be especially slow on remote storage. It does not recompute payload
-checksums; use checksum-verified cache generation/resume or
-`cache_staging_path` when payload integrity must also be re-established.
+can be especially slow on remote storage. It reads headers only, not tensor
+payloads.
 
 ## Distributed generation and resume
 
-All ranks independently build and compare the same global frame plan. Each
+All ranks independently build the deterministic global frame plan. Each
 immutable shard has exactly one owner rank. Ranks write their own Parquet index
 fragments; rank zero validates and merges all fragments, then atomically
 publishes the final manifest.
 
-Every completed shard has a sidecar under `meta/shards/`. The sidecar is bound
-to the complete semantic fingerprint, so preprocessing or WorldMirror changes
-cannot reuse old tensors. A restarted job validates sidecars and checksums and rebuilds only missing or invalid shards.
+Every completed shard has a sidecar under `meta/shards/`. It records the exact
+ordered frame-token list, tensor metadata, paths, and sizes. A restarted job
+reuses matching shards and rebuilds missing or structurally invalid shards. Use
+`force_cache_computation=true` after changing preprocessing or WorldMirror.
 `extraction_batch_frames` controls how many frames are passed to WorldMirror at
 once and defaults to the conservative value `1`; it is independent of the
 64-frame storage shard size.
 
-Use `distributed_dry_run=true` to verify source visibility and the cross-rank
-global plan without loading WorldMirror. Run only one coordinated `torchrun`
-job against a cache root at a time.
+Use `distributed_dry_run=true` to inspect source visibility and each rank's
+deterministic plan summary without loading WorldMirror. Run only one coordinated
+`torchrun` job against a cache root at a time.
 
 ## Training locality and optional staging
 
@@ -123,5 +124,5 @@ DataLoader worker keeps a small shard LRU; configure it with
 
 The shared cache is always directly usable. Set `cache_staging_path` during
 training to copy the complete cache to node-local NVMe. Staging is protected by
-a local file lock, verifies every checksum, and publishes the local manifest
-last.
+a local file lock, validates file presence and sizes, and publishes the local
+manifest last. Malformed tensors fail when loaded.

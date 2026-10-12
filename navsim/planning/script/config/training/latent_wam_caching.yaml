@@ -10,7 +10,6 @@ force_cache_computation: false
 distributed_dry_run: false
 frames_per_shard: 64
 extraction_batch_frames: 1
-verify_resume_checksums: true
 
 hydra:
   run:

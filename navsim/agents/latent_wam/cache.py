@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -16,7 +15,6 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 CACHE_FORMAT = "latent_wam_sharded_cache"
-SCHEMA_REVISION = 1
 TIME_OFFSETS_S: Tuple[float, ...] = (-1.5, 0.0, 2.0, 4.0)
 MANIFEST_NAME = "manifest.json"
 SCHEMA_NAME = "schema.json"
@@ -70,54 +68,10 @@ class SampleRecord:
     trajectory: torch.Tensor
 
 
-def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
-    """Return a file SHA-256 without loading it all into memory.
-
-    Args:
-        path: File to hash.
-        chunk_size: Streaming read size in bytes.
-
-    Returns:
-        Lowercase hexadecimal SHA-256 digest.
-    """
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        while chunk := file.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def fingerprint_digest(fingerprint: Mapping[str, Any]) -> str:
-    """Hash cache semantic inputs using canonical JSON.
-
-    Args:
-        fingerprint: JSON-serializable semantic input mapping.
-
-    Returns:
-        Lowercase hexadecimal SHA-256 digest.
-    """
-    payload = json.dumps(fingerprint, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def frame_tokens_digest(frame_tokens: Iterable[str]) -> str:
-    """Hash the ordered frame rows in one shard.
-
-    Args:
-        frame_tokens: Frame tokens in physical row order.
-
-    Returns:
-        Order-sensitive hexadecimal SHA-256 digest.
-    """
-    payload = json.dumps(list(frame_tokens), separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _file_record(cache_root: Path, path: Path, shape: Sequence[int], dtype: torch.dtype) -> Dict[str, Any]:
     return {
         "path": path.relative_to(cache_root).as_posix(),
         "size_bytes": path.stat().st_size,
-        "sha256": sha256_file(path),
         "shape": list(shape),
         "dtype": str(dtype).removeprefix("torch."),
     }
@@ -163,7 +117,6 @@ def write_cache_shard(
     images: torch.Tensor,
     geometry: torch.Tensor,
     ego_status: torch.Tensor,
-    cache_fingerprint_sha256: str,
 ) -> Dict[str, Any]:
     """Validate and atomically publish one aligned shard pair.
 
@@ -174,19 +127,16 @@ def write_cache_shard(
         images: Preprocessed uint8 image tensor.
         geometry: Float32 WorldMirror tensor.
         ego_status: Float32 frame status tensor.
-        cache_fingerprint_sha256: Semantic identity binding for resume.
 
     Returns:
         JSON-serializable shard manifest record.
 
     Raises:
-        ValueError: If IDs, fingerprints, shapes, dtypes, or values are invalid.
+        ValueError: If IDs, shapes, dtypes, or values are invalid.
     """
     cache_root = Path(cache_root)
     if shard_id < 0:
         raise ValueError("shard_id must be non-negative")
-    if len(cache_fingerprint_sha256) != 64:
-        raise ValueError("cache fingerprint must be a SHA-256 hexadecimal digest")
     _validate_shard_tensors(frame_tokens, images, geometry, ego_status)
     image_path = cache_root / "images" / f"shard-{shard_id:06d}.safetensors"
     geometry_path = cache_root / "geometry" / f"shard-{shard_id:06d}.safetensors"
@@ -195,8 +145,7 @@ def write_cache_shard(
     record = {
         "id": shard_id,
         "frame_count": len(frame_tokens),
-        "frame_tokens_sha256": frame_tokens_digest(frame_tokens),
-        "cache_fingerprint_sha256": cache_fingerprint_sha256,
+        "frame_tokens": list(frame_tokens),
         "first_frame_token": frame_tokens[0],
         "last_frame_token": frame_tokens[-1],
         "images": _file_record(cache_root, image_path, images.shape, images.dtype),
@@ -212,8 +161,6 @@ def load_cache_shard_record(
     cache_root: Path,
     shard_id: int,
     expected_frame_tokens: Sequence[str],
-    expected_cache_fingerprint_sha256: str,
-    verify_files: bool = True,
 ) -> Dict[str, Any] | None:
     """Load and validate a resumable shard sidecar.
 
@@ -221,8 +168,6 @@ def load_cache_shard_record(
         cache_root: Cache root directory.
         shard_id: Expected shard identifier.
         expected_frame_tokens: Expected row-ordered frame tokens.
-        expected_cache_fingerprint_sha256: Expected semantic cache identity.
-        verify_files: Whether to recompute full file checksums.
 
     Returns:
         Shard record, or ``None`` when the shard must be rebuilt.
@@ -238,8 +183,7 @@ def load_cache_shard_record(
     if (
         record.get("id") != shard_id
         or record.get("frame_count") != len(expected_frame_tokens)
-        or record.get("frame_tokens_sha256") != frame_tokens_digest(expected_frame_tokens)
-        or record.get("cache_fingerprint_sha256") != expected_cache_fingerprint_sha256
+        or record.get("frame_tokens") != list(expected_frame_tokens)
         or record.get("images", {}).get("shape") != [len(expected_frame_tokens), 3, 224, 448, 3]
         or record.get("geometry", {}).get("shape") != [len(expected_frame_tokens), 3, 519, 2048]
         or record.get("ego_status") != {"shape": [len(expected_frame_tokens), 8], "dtype": "float32"}
@@ -249,8 +193,6 @@ def load_cache_shard_record(
         file_record = record.get(kind, {})
         path = cache_root / file_record.get("path", "missing")
         if not path.is_file() or path.stat().st_size != file_record.get("size_bytes"):
-            return None
-        if verify_files and sha256_file(path) != file_record.get("sha256"):
             return None
     return record
 
@@ -441,7 +383,6 @@ def publish_cache_index(
     frames_path, samples_path = _write_parquet_indices(cache_root, ordered_frames, samples)
     schema = {
         "format": CACHE_FORMAT,
-        "schema_revision": SCHEMA_REVISION,
         "time_offsets_s": list(TIME_OFFSETS_S),
         "frames_index": FRAMES_INDEX_PATH,
         "samples_index": SAMPLES_INDEX_PATH,
@@ -453,13 +394,11 @@ def publish_cache_index(
     semantic_inputs = json.loads(json.dumps(fingerprint, sort_keys=True))
     manifest = {
         "format": CACHE_FORMAT,
-        "schema_revision": SCHEMA_REVISION,
         "status": "complete",
         "frames_per_shard": frames_per_shard,
         "frame_count": len(ordered_frames),
         "sample_count": len(samples),
         "fingerprint": semantic_inputs,
-        "fingerprint_sha256": fingerprint_digest(semantic_inputs),
         "schema": _file_record(cache_root, schema_path, [1], torch.uint8),
         "indices": {
             "frames": _file_record(cache_root, frames_path, [len(ordered_frames)], torch.uint8),
@@ -474,7 +413,6 @@ def publish_cache_index(
 def load_cache_manifest(
     cache_root: Path,
     expected_fingerprint: Mapping[str, Any] | None = None,
-    verify_files: bool = False,
     verify_presence: bool = True,
 ) -> Dict[str, Any]:
     """Load and validate a complete cache manifest.
@@ -482,7 +420,6 @@ def load_cache_manifest(
     Args:
         cache_root: Cache root directory.
         expected_fingerprint: Optional exact semantic identity.
-        verify_files: Whether to recompute every recorded checksum.
         verify_presence: Whether to check recorded paths and sizes.
 
     Returns:
@@ -499,16 +436,13 @@ def load_cache_manifest(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cache manifest is invalid: {manifest_path}") from error
-    if (
-        manifest.get("format") != CACHE_FORMAT
-        or manifest.get("schema_revision") != SCHEMA_REVISION
-        or manifest.get("status") != "complete"
-    ):
-        raise ValueError("cache manifest format, revision, or status is incompatible")
+    if manifest.get("format") != CACHE_FORMAT or manifest.get("status") != "complete":
+        raise ValueError("cache manifest format or status is incompatible")
     actual_fingerprint = manifest.get("fingerprint")
-    if manifest.get("fingerprint_sha256") != fingerprint_digest(actual_fingerprint):
-        raise ValueError("cache fingerprint digest is invalid")
-    if expected_fingerprint is not None and fingerprint_digest(expected_fingerprint) != manifest["fingerprint_sha256"]:
+    normalized_expected = (
+        json.loads(json.dumps(expected_fingerprint, sort_keys=True)) if expected_fingerprint is not None else None
+    )
+    if normalized_expected is not None and actual_fingerprint != normalized_expected:
         raise ValueError("cache fingerprint is incompatible with the requested training configuration")
     if verify_presence:
         records = [manifest["schema"], *manifest["indices"].values()]
@@ -518,8 +452,6 @@ def load_cache_manifest(
             path = cache_root / record["path"]
             if not path.is_file() or path.stat().st_size != record["size_bytes"]:
                 raise ValueError(f"cache file is missing or has the wrong size: {path}")
-            if verify_files and sha256_file(path) != record["sha256"]:
-                raise ValueError(f"cache file checksum mismatch: {path}")
     return manifest
 
 
@@ -528,7 +460,6 @@ def validate_cache_compatibility(
     config: Any,
     dataset_split: str | None = None,
     allowed_logs: Iterable[str] | None = None,
-    worldmirror_weights_sha256: str | None = None,
 ) -> None:
     """Compare cache semantics with a training configuration.
 
@@ -537,7 +468,6 @@ def validate_cache_compatibility(
         config: Latent WAM model configuration.
         dataset_split: Optional expected NAVSIM data split.
         allowed_logs: Optional complete set of train/validation log names.
-        worldmirror_weights_sha256: Optional expected WorldMirror weights digest.
 
     Raises:
         ValueError: If any requested semantic field is incompatible.
@@ -554,7 +484,6 @@ def validate_cache_compatibility(
         "resize_size": [256, 455],
         "interpolation": "torch_bicubic_antialias",
         "worldmirror_model_id": str(config.geometry.model_id),
-        "worldmirror_weights_sha256": worldmirror_weights_sha256,
     }
     actual = {
         "time_offsets_s": fingerprint.get("time_offsets_s"),
@@ -567,11 +496,7 @@ def validate_cache_compatibility(
         "resize_size": fingerprint.get("preprocessing", {}).get("resize_size"),
         "interpolation": fingerprint.get("preprocessing", {}).get("interpolation"),
         "worldmirror_model_id": fingerprint.get("worldmirror", {}).get("model_id"),
-        "worldmirror_weights_sha256": fingerprint.get("worldmirror", {}).get("weights_sha256"),
     }
-    if worldmirror_weights_sha256 is None:
-        expected.pop("worldmirror_weights_sha256")
-        actual.pop("worldmirror_weights_sha256")
     if dataset_split is not None:
         expected["dataset"] = {"name": "NAVSIM", "version": "2.1.2", "split": dataset_split}
         actual["dataset"] = fingerprint.get("dataset")
@@ -626,7 +551,7 @@ def _manifest_file_records(manifest: Mapping[str, Any]) -> list[Mapping[str, Any
 
 
 def stage_cache(source_root: Path, destination_root: Path) -> Path:
-    """Copy a complete cache to node-local storage.
+    """Copy a complete cache to node-local storage without rescanning payloads.
 
     Args:
         source_root: Complete shared cache root.
@@ -636,7 +561,7 @@ def stage_cache(source_root: Path, destination_root: Path) -> Path:
         Resolved node-local cache root.
 
     Raises:
-        ValueError: If source or copied files fail validation.
+        ValueError: If source or copied files are missing or have the wrong size.
     """
     import fcntl
 
@@ -653,8 +578,8 @@ def stage_cache(source_root: Path, destination_root: Path) -> Path:
         destination_manifest_path = destination_root / MANIFEST_NAME
         if destination_manifest_path.is_file():
             try:
-                destination_manifest = load_cache_manifest(destination_root, verify_files=True)
-                if destination_manifest["fingerprint_sha256"] == source_manifest["fingerprint_sha256"]:
+                destination_manifest = load_cache_manifest(destination_root)
+                if destination_manifest["fingerprint"] == source_manifest["fingerprint"]:
                     return destination_root
             except ValueError:
                 pass
@@ -666,10 +591,8 @@ def stage_cache(source_root: Path, destination_root: Path) -> Path:
             temporary_path = destination_path.with_name(f".{destination_path.name}.{uuid.uuid4().hex}.tmp")
             try:
                 shutil.copyfile(source_path, temporary_path)
-                wrong_size = temporary_path.stat().st_size != record["size_bytes"]
-                wrong_checksum = sha256_file(temporary_path) != record["sha256"]
-                if wrong_size or wrong_checksum:
-                    raise ValueError(f"staged cache file failed checksum validation: {source_path}")
+                if temporary_path.stat().st_size != record["size_bytes"]:
+                    raise ValueError(f"staged cache file has the wrong size: {source_path}")
                 os.replace(temporary_path, destination_path)
             finally:
                 temporary_path.unlink(missing_ok=True)
@@ -677,5 +600,5 @@ def stage_cache(source_root: Path, destination_root: Path) -> Path:
             destination_manifest_path,
             json.dumps(source_manifest, indent=2, sort_keys=True) + "\n",
         )
-        load_cache_manifest(destination_root, verify_files=True)
+        load_cache_manifest(destination_root)
     return destination_root

@@ -13,7 +13,7 @@ Losses are preserved from the final implementation:
 - command cross-entropy plus velocity/acceleration MSE.
 
 Generate the sharded cache first, then train with `build_target_encoder=true`
-and `use_cache_without_dataset=true`; commands are in the root README. The
+and `use_cache_without_dataset=true`; commands are in the [usage guide](usage.md#train-latent-wam-from-scratch). The
 target DINO encoder is initialized from the online encoder when loading public
 safetensors and is updated with EMA momentum 0.999.
 
@@ -25,7 +25,7 @@ can be enabled with `cache_staging_path=/local/nvme/latent_wam_cache`.
 
 ## Cache startup validation
 
-Cache generation and resume validate shard checksums and structure before
+Cache generation and resume validate shard metadata and structure before
 publishing a complete manifest. Training therefore defaults to
 `validate_cache_headers=false` and uses the fast startup checks described in
 [the cache-format specification](cache-format.md).
@@ -33,10 +33,9 @@ publishing a complete manifest. Training therefore defaults to
 Set `validate_cache_headers=true` when a cache needs an additional structural
 audit, such as after a manual copy or filesystem incident. The audit checks the
 tensor keys, shapes, and dtypes in every shard header. It runs once for each of
-the train and validation datasets on every distributed rank, may be slow on
-shared storage, and does not recompute payload checksums. `cache_staging_path`
-performs checksum-verified copying when a full payload-integrity check is
-required before training.
+the train and validation datasets on every distributed rank and may be slow on
+shared storage. `cache_staging_path` does the same presence and size checks
+while copying; malformed tensors fail when loaded.
 
 The public safetensors file intentionally omits optimizer and target-encoder
 state. It can initialize fine-tuning, but cannot reproduce an exact Lightning

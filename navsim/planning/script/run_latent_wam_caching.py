@@ -18,12 +18,10 @@ from navsim.agents.latent_wam.cache import (
     MANIFEST_NAME,
     FrameRecord,
     SampleRecord,
-    fingerprint_digest,
     load_cache_manifest,
     load_cache_shard_record,
     publish_cache_index,
     read_partial_cache_indices,
-    sha256_file,
     validate_cache_headers,
     write_cache_shard,
     write_partial_cache_index,
@@ -164,7 +162,6 @@ def _generate_shard(
     sensor_root: Path,
     extractor: WorldMirrorFeatureExtractor,
     extraction_batch_frames: int,
-    cache_fingerprint_sha256: str,
 ) -> Dict[str, Any]:
     frame_count = len(frames)
     image_buffer = torch.empty((frame_count, 3, *DINO_CROP_SIZE, 3), dtype=torch.uint8)
@@ -198,17 +195,12 @@ def _generate_shard(
         image_buffer,
         geometry_buffer,
         ego_status_buffer,
-        cache_fingerprint_sha256,
     )
 
 
 def _cache_fingerprint(cfg: DictConfig, plan: FrameCachePlan) -> Dict[str, Any]:
-    worldmirror_weights = Path(str(cfg.agent.config.geometry.model_id)).expanduser() / "model.safetensors"
-    if not worldmirror_weights.is_file():
-        raise ValueError(f"WorldMirror model.safetensors is required for cache identity: {worldmirror_weights}")
     return {
         "dataset": {"name": "NAVSIM", "version": "2.1.2", "split": str(cfg.train_test_split.data_split)},
-        "plan_sha256": plan.fingerprint(),
         "sample_count": len(plan.samples),
         "logs": sorted({sample.log_name for sample in plan.samples}),
         "time_offsets_s": list(cfg.agent.config.data.time_offsets_s),
@@ -221,7 +213,6 @@ def _cache_fingerprint(cfg: DictConfig, plan: FrameCachePlan) -> Dict[str, Any]:
         },
         "worldmirror": {
             "model_id": str(cfg.agent.config.geometry.model_id),
-            "weights_sha256": sha256_file(worldmirror_weights),
             "patch_start_index": int(cfg.agent.config.geometry.patch_start_index),
         },
         "geometry": {"shape_per_frame": [3, 519, 2048], "dtype": "float32"},
@@ -266,9 +257,7 @@ def _run_cache(cfg: DictConfig, context: DistributedCacheContext) -> None:
         frame_indices=TRAINING_FRAME_INDICES,
         frames_per_shard=int(cfg.frames_per_shard),
     )
-    context.verify_plan(plan)
     fingerprint = context.broadcast_object(_cache_fingerprint(cfg, plan) if context.rank == 0 else None)
-    cache_fingerprint_sha256 = fingerprint_digest(fingerprint)
     cache_root = Path(cfg.cache_path)
     manifest_path = cache_root / MANIFEST_NAME
     cache_state = None
@@ -287,7 +276,6 @@ def _run_cache(cfg: DictConfig, context: DistributedCacheContext) -> None:
                 manifest = load_cache_manifest(
                     cache_root,
                     expected_fingerprint=fingerprint,
-                    verify_files=bool(cfg.verify_resume_checksums),
                 )
                 validate_cache_headers(cache_root, manifest)
                 cache_state = "complete"
@@ -323,8 +311,6 @@ def _run_cache(cfg: DictConfig, context: DistributedCacheContext) -> None:
                 cache_root,
                 shard_id,
                 [frame.token for frame in frames],
-                cache_fingerprint_sha256,
-                verify_files=bool(cfg.verify_resume_checksums),
             )
         if existing is None:
             pending.append((shard_id, frames))
@@ -355,7 +341,6 @@ def _run_cache(cfg: DictConfig, context: DistributedCacheContext) -> None:
                         Path(cfg.original_sensor_path),
                         extractor,
                         int(cfg.extraction_batch_frames),
-                        cache_fingerprint_sha256,
                     )
                 )
             except Exception as error:

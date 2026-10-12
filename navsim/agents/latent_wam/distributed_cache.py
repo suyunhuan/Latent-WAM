@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 
@@ -53,46 +50,6 @@ class FrameCachePlan:
         """Number of immutable frame shards in this plan."""
         return 0 if not self.frames else self.frames[-1].shard_id + 1
 
-    def fingerprint(self) -> str:
-        """Return a cross-rank comparable digest of all planned identities."""
-        payload = {
-            "frames": [frame.__dict__ for frame in self.frames],
-            "samples": [sample.__dict__ for sample in self.samples],
-            "sources": {token: source.__dict__ for token, source in sorted(self.sources.items())},
-            "frames_per_shard": self.frames_per_shard,
-        }
-        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def _json_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    if hasattr(value, "tolist"):
-        return _json_value(value.tolist())
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return repr(value)
-
-
-def _frame_semantic_digest(frame: Mapping[str, Any]) -> str:
-    cameras = frame.get("cams", frame.get("camera_dict", {}))
-    relevant = {
-        "token": frame.get("token"),
-        "timestamp": frame.get("timestamp"),
-        "log_name": frame.get("log_name"),
-        "cams": cameras,
-        "ego2global_translation": frame.get("ego2global_translation"),
-        "ego2global_rotation": frame.get("ego2global_rotation"),
-        "ego_dynamic_state": frame.get("ego_dynamic_state"),
-        "driving_command": frame.get("driving_command"),
-    }
-    payload = json.dumps(_json_value(relevant), sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
 
 def build_frame_cache_plan(
     scenes: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -118,7 +75,6 @@ def build_frame_cache_plan(
         raise ValueError("frames_per_shard must be positive")
     sources: Dict[str, FrameSource] = {}
     frame_metadata: Dict[str, Tuple[str, int]] = {}
-    frame_digests: Dict[str, str] = {}
     samples: List[PlannedSample] = []
     for sample_token in sorted(scenes):
         scene_frames = scenes[sample_token]
@@ -130,11 +86,10 @@ def build_frame_cache_plan(
             frame_token = str(frame["token"])
             log_name = str(frame["log_name"])
             timestamp = int(frame["timestamp"])
-            digest = _frame_semantic_digest(frame)
-            if frame_token in frame_digests and frame_digests[frame_token] != digest:
+            metadata = (log_name, timestamp)
+            if frame_token in frame_metadata and frame_metadata[frame_token] != metadata:
                 raise ValueError(f"frame token {frame_token} has conflicting source data")
-            frame_digests.setdefault(frame_token, digest)
-            frame_metadata.setdefault(frame_token, (log_name, timestamp))
+            frame_metadata.setdefault(frame_token, metadata)
             candidate = FrameSource(sample_token=sample_token, frame_index=frame_index)
             previous = sources.get(frame_token)
             if previous is None or (candidate.sample_token, candidate.frame_index) < (
@@ -282,19 +237,6 @@ class DistributedCacheContext:
         gathered = [None] * self.world_size
         dist.all_gather_object(gathered, value)
         return gathered
-
-    def verify_plan(self, plan: FrameCachePlan) -> None:
-        """Require every rank to hold the same global plan.
-
-        Args:
-            plan: Locally computed cache plan.
-
-        Raises:
-            ValueError: If rank fingerprints differ.
-        """
-        signatures = self.all_gather_object(plan.fingerprint())
-        if any(signature != signatures[0] for signature in signatures):
-            raise ValueError(f"cache plans differ across ranks: {signatures}")
 
     def broadcast_object(self, value: Any, source_rank: int = 0) -> Any:
         """Broadcast one small Python object.

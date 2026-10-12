@@ -4,13 +4,10 @@ import pytest
 import torch
 
 import navsim.agents.latent_wam.dataset as dataset_module
-
 from navsim.agents.latent_wam.cache import (
     CACHE_FORMAT,
-    SCHEMA_REVISION,
     FrameRecord,
     SampleRecord,
-    fingerprint_digest,
     load_cache_manifest,
     load_cache_shard_record,
     publish_cache_index,
@@ -44,7 +41,6 @@ def _publish_fixture(cache_root: Path) -> None:
         "worldmirror": {
             "model_id": "tencent/HunyuanWorld-Mirror",
             "patch_start_index": 7,
-            "weights_sha256": "abc",
         },
         "geometry": {"shape_per_frame": [3, 519, 2048], "dtype": "float32"},
     }
@@ -55,7 +51,6 @@ def _publish_fixture(cache_root: Path) -> None:
         images,
         geometry,
         ego_status,
-        fingerprint_digest(fingerprint),
     )
     frames = [
         FrameRecord(token=token, log_name="log", timestamp=index, shard_id=0, row_index=index)
@@ -95,7 +90,6 @@ def test_sharded_cache_reconstructs_sample_from_frame_index(tmp_path: Path) -> N
 
     manifest = load_cache_manifest(tmp_path)
     assert manifest["format"] == CACHE_FORMAT
-    assert manifest["schema_revision"] == SCHEMA_REVISION
     assert manifest["status"] == "complete"
     assert manifest["frame_count"] == 4
     assert manifest["sample_count"] == 1
@@ -103,18 +97,18 @@ def test_sharded_cache_reconstructs_sample_from_frame_index(tmp_path: Path) -> N
 
 def test_cache_is_unavailable_until_final_manifest_is_published(tmp_path: Path) -> None:
     images, geometry, ego_status = _cache_tensors(1)
-    write_cache_shard(tmp_path, 0, ("frame",), images, geometry, ego_status, "0" * 64)
+    write_cache_shard(tmp_path, 0, ("frame",), images, geometry, ego_status)
 
     with pytest.raises(ValueError, match="manifest"):
         LatentWAMCacheDataset(tmp_path)
 
 
-def test_resumable_shard_is_bound_to_the_complete_cache_fingerprint(tmp_path: Path) -> None:
+def test_resumable_shard_is_bound_to_its_ordered_frame_tokens(tmp_path: Path) -> None:
     images, geometry, ego_status = _cache_tensors(1)
-    write_cache_shard(tmp_path, 0, ("frame",), images, geometry, ego_status, "a" * 64)
+    write_cache_shard(tmp_path, 0, ("frame",), images, geometry, ego_status)
 
-    assert load_cache_shard_record(tmp_path, 0, ("frame",), "a" * 64) is not None
-    assert load_cache_shard_record(tmp_path, 0, ("frame",), "b" * 64) is None
+    assert load_cache_shard_record(tmp_path, 0, ("frame",)) is not None
+    assert load_cache_shard_record(tmp_path, 0, ("other",)) is None
 
 
 def test_cache_rejects_incompatible_fingerprint(tmp_path: Path) -> None:
@@ -161,13 +155,19 @@ def test_frame_tokens_must_be_globally_unique(tmp_path: Path) -> None:
         )
 
 
-def test_complete_cache_can_be_checksum_verified_and_staged(tmp_path: Path) -> None:
+def test_complete_cache_records_explicit_metadata_and_can_be_staged(tmp_path: Path) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "local-nvme"
     _publish_fixture(source)
 
+    source_manifest = load_cache_manifest(source)
+    records = [source_manifest["schema"], *source_manifest["indices"].values()]
+    for shard in source_manifest["shards"]:
+        records.extend((shard["images"], shard["geometry"]))
+    assert all(set(record) == {"path", "size_bytes", "shape", "dtype"} for record in records)
+
     staged = stage_cache(source, destination)
 
     assert staged == destination
-    load_cache_manifest(destination, verify_files=True)
+    load_cache_manifest(destination)
     assert LatentWAMCacheDataset(destination)[0][0]["token"] == "sample"
