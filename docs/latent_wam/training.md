@@ -12,6 +12,129 @@ Losses are preserved from the final implementation:
 - cosine geometry alignment loss;
 - command cross-entropy plus velocity/acceleration MSE.
 
+## Temporal attention modes
+
+`agent.config.training.temporal_attention_mask` selects the mask used by both
+world-model self-attention and cross-attention:
+
+- `block_diagonal` (default): each prediction block reads only its paired source
+  block. Configurations that omit the field retain the released behavior.
+- `block_causal`: each prediction block reads its paired source and all earlier
+  source blocks; prediction queries can also attend to earlier query blocks.
+  Attention within each block remains unrestricted.
+
+For a new causal experiment, pass these overrides to the existing training launcher:
+
+```text
+agent.config.training.temporal_attention_mask=block_causal
+experiment_uid=navtrain_block_causal
+```
+
+The token order and 3D RoPE coordinates remain unchanged: each block contains one
+ego token and 16 scene tokens for each of three views. Query time indices are
+`[4, 8, 12]`, while source time indices are `[1, 4, 8]`. The three coordinates
+are time, view, and learned scene-token slot, rather than a pixel-space grid.
+The causal mask permits
+`source_block <= prediction_block`, not `source_time <= prediction_time`: a real
+observation at the prediction's own timestamp would reveal its target.
+
+The training timestamps remain `[-1.5, 0, 2, 4]` seconds. In causal mode the 0s
+prediction reads -1.5s; the 2s prediction reads -1.5s and 0s; the 4s prediction
+reads -1.5s, 0s, and 2s. Reading the real 2s observation to predict 4s is teacher
+forcing, not an open-loop 4s forecast made at 0s. Neither mode adds a future
+rollout to current-frame trajectory inference.
+
+Lightning checkpoints record `latent_wam_temporal_attention_mask`. Exact resume
+requires a matching mode; checkpoints without the field are treated as
+`block_diagonal`. To change modes, start a new run initialized from weights,
+without restoring the old optimizer or scheduler. Parameter names and shapes
+are unchanged, and released safetensors remain strictly loadable. The mask mode
+is present in the saved Hydra configuration and logged at module construction.
+Both modes use the same data cache and cache fingerprint; no regeneration is needed.
+
+### Initialize a new run from old weights
+
+Set a new experiment UID, a `.ckpt` or `.safetensors` weights file, and no
+resume checkpoint when changing attention modes:
+
+```text
+agent.config.training.temporal_attention_mask=block_causal
+agent.checkpoint_path=/path/to/old_run.ckpt
+resume_ckpt_path=null
+experiment_uid=navtrain_block_causal_from_old_weights
+```
+
+The training entry point calls `agent.initialize(device=cpu)` before creating the
+training module. It strictly validates model keys and shapes, then Lightning
+places the model on each rank's device. The requested mask mode stays in effect;
+weights have no mask-mode-specific parameters. If the weights omit the target
+DINO encoder, it is initialized from the loaded online encoder. Provided target
+encoder weights are preserved.
+
+This starts at global step zero with a newly created optimizer and warmup/cosine
+scheduler from the new run's settings. No old optimizer, scheduler, epoch, or
+global-step state is loaded. `agent.checkpoint_path` accepts `.safetensors` with
+bare model keys, or `.ckpt` with a tensor `state_dict`. Checkpoint keys must be
+uniformly bare model names or uniformly prefixed with `agent.model.`; that
+prefix is stripped explicitly. Mixed namespaces and unknown keys are rejected
+under the default strict loading policy. The tensor-only checkpoint loader does
+not deserialize arbitrary Python objects or restore training state.
+
+For exact resume, set `agent.checkpoint_path=null` and
+`resume_ckpt_path=/path/to/run.ckpt`; the checkpoint's attention mode must match.
+Setting both paths is an error rather than silently preferring either one.
+
+### Default checkpoint output and manual conversion
+
+Training defaults to full `.ckpt` output only:
+`agent.config.training.export_safetensors=false`. Model weights can be exported
+later without starting training or constructing a vision model:
+
+```bash
+python scripts/convert_latent_wam_checkpoint.py /path/to/run.ckpt \
+  --output /path/to/model.safetensors
+```
+
+Without `--output`, the result is saved beside the source with a `.safetensors`
+suffix. The source checkpoint is never modified. Existing outputs are rejected;
+use `--overwrite` explicitly to replace an output. Default no-overwrite publication
+uses an atomic hard link, so the output filesystem must support hard links;
+explicit overwrite uses atomic rename instead.
+
+All model tensors, including EMA when present, are retained by default. Add
+`--inference-only` to omit `target_dino_encoder.*` for inference-only consumers.
+Only the uniform `agent.model.` prefix is removed; bare model names are retained
+and mixed namespaces are rejected. Optimizer and scheduler state are excluded.
+Metadata records the source filename, mask mode, and epoch/global step when
+available. A missing legacy mask field is recorded as `block_diagonal`.
+
+### Optional paired safetensors export
+
+Full Lightning `.ckpt` files remain the training checkpoint format. Enable a
+paired model-weight export at the same checkpoint cadence with:
+
+```text
+agent.config.training.export_safetensors=true
+```
+
+The default is `false`. Each successful scheduled ModelCheckpoint save then
+writes a sibling with the same stem and `.safetensors` suffix, on rank zero only.
+This export contains all model tensors, including the EMA target encoder, plus
+text metadata for the mask mode, epoch, global step, and source checkpoint name.
+It contains no optimizer or scheduler state. Complete EMA weights are retained
+for training initialization; inference explicitly ignores valid EMA tensors.
+Partial or incompatible EMA weights are rejected.
+
+The exporter copies detached tensors to independent contiguous CPU storage and
+publishes the file with an atomic rename on the local or mounted filesystem.
+Export failure leaves the full `.ckpt` intact and is reported as an error. When
+the checkpoint callback prunes a checkpoint, it also removes its paired export.
+The callback retains the original ModelCheckpoint state key for exact resume.
+Direct calls to `trainer.save_checkpoint()` save only the full checkpoint;
+paired exports are managed by the training checkpoint callback.
+
+## Cache preparation
+
 Generate the sharded cache first, then train with `build_target_encoder=true`
 and `use_cache_without_dataset=true`; commands are in the [usage guide](usage.md#train-latent-wam-from-scratch). The
 target DINO encoder is initialized from the online encoder when loading public

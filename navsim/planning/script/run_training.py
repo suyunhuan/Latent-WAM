@@ -1,10 +1,11 @@
 import logging
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import hydra
 import pytorch_lightning as pl
+import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
@@ -25,6 +26,32 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = "config/training"
 CONFIG_NAME = "default_training"
+
+
+def build_lightning_module(agent: AbstractAgent, resume_ckpt_path: Optional[str] = None) -> pl.LightningModule:
+    """Initialize training weights or defer exact resume to Lightning.
+
+    Args:
+        agent: Instantiated planning agent.
+        resume_ckpt_path: Full Lightning checkpoint for an exact resume, if any.
+
+    Returns:
+        The agent's training module, with fresh optimizer state for weights-only startup.
+
+    Raises:
+        ValueError: If both weights-only initialization and exact resume are requested.
+    """
+    if isinstance(agent, LatentWAMAgent):
+        if agent.checkpoint_path:
+            if resume_ckpt_path:
+                raise ValueError(
+                    "agent.checkpoint_path and resume_ckpt_path are mutually exclusive: "
+                    "use weights-only initialization for a new run, or exact resume for an existing run"
+                )
+            logger.info("Initializing Latent WAM model weights only from %s on CPU", agent.checkpoint_path)
+            agent.initialize(device=torch.device("cpu"))
+        return LatentWAMLightningModule(agent=agent)
+    return AgentLightningModule(agent=agent)
 
 
 def build_datasets(cfg: DictConfig, agent: AbstractAgent) -> Tuple[Dataset, Dataset]:
@@ -104,10 +131,7 @@ def main(cfg: DictConfig) -> None:
         raise ValueError("Latent WAM training requires caches; set use_cache_without_dataset=true")
 
     logger.info("Building Lightning Module")
-    if isinstance(agent, LatentWAMAgent):
-        lightning_module = LatentWAMLightningModule(agent=agent)
-    else:
-        lightning_module = AgentLightningModule(agent=agent)
+    lightning_module = build_lightning_module(agent, resume_ckpt_path=cfg.get("resume_ckpt_path", None))
 
     if cfg.use_cache_without_dataset:
         logger.info("Using cached data without building SceneLoader")

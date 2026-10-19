@@ -8,6 +8,7 @@ import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from navsim.agents.abstract_agent import AbstractAgent
+from navsim.agents.latent_wam.checkpoint import LatentWAMModelCheckpoint, load_model_weights
 from navsim.agents.latent_wam.config import LatentWAMConfig
 from navsim.agents.latent_wam.features import (
     CURRENT_FRAME_INDEX,
@@ -45,21 +46,32 @@ class LatentWAMAgent(AbstractAgent):
         """Return the current-frame three-camera sensor configuration."""
         return build_camera_sensor_config([CURRENT_FRAME_INDEX])
 
-    def initialize(self) -> None:
-        """Strictly load a released safetensors checkpoint when configured."""
+    def initialize(self, *, device: Optional[torch.device] = None) -> None:
+        """Strictly load model weights without optimizer or scheduler state.
+
+        Args:
+            device: Optional destination after loading. Training uses CPU and lets
+                Lightning place each rank; inference defaults to an available GPU.
+        """
         if not self.checkpoint_path:
             return
         checkpoint_path = Path(self.checkpoint_path)
-        if checkpoint_path.suffix != ".safetensors":
-            raise ValueError("Latent WAM checkpoints must use the released .safetensors format")
-        try:
-            from safetensors.torch import load_file
-        except ImportError as error:
-            raise RuntimeError("install safetensors to load released weights") from error
-        state_dict = load_file(str(checkpoint_path), device="cpu")
+        state_dict = load_model_weights(checkpoint_path)
+        target_prefix = "target_dino_encoder."
+        target_keys = {key for key in state_dict if key.startswith(target_prefix)}
+        if target_keys:
+            expected_target = {
+                target_prefix + key: value for key, value in self.model.vision_encoder.state_dict().items()
+            }
+            if target_keys != expected_target.keys() or any(
+                state_dict[key].shape != expected_target[key].shape for key in target_keys & expected_target.keys()
+            ):
+                raise RuntimeError("checkpoint has incomplete or incompatible target_dino_encoder weights")
+            if self.model.target_dino_encoder is None:
+                state_dict = {key: value for key, value in state_dict.items() if key not in target_keys}
         incompatible = self.model.load_state_dict(state_dict, strict=False)
         missing_keys = list(incompatible.missing_keys)
-        if self.model.target_dino_encoder is not None:
+        if self.model.target_dino_encoder is not None and not target_keys:
             target_missing = [key for key in missing_keys if key.startswith("target_dino_encoder.")]
             if target_missing:
                 self.model.target_dino_encoder.load_state_dict(self.model.vision_encoder.state_dict())
@@ -69,7 +81,7 @@ class LatentWAMAgent(AbstractAgent):
                 "checkpoint is incompatible with Latent WAM: "
                 f"missing={missing_keys}, unexpected={incompatible.unexpected_keys}"
             )
-        self.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        self.to(device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
     def forward(self, features: Mapping[str, torch.Tensor]) -> TrajectoryPrediction:
         """Predict trajectories from current-frame features.
@@ -165,7 +177,9 @@ class LatentWAMAgent(AbstractAgent):
     def get_training_callbacks(self) -> List[pl.Callback]:
         """Return checkpoint and learning-rate logging callbacks."""
         return [
-            pl.callbacks.ModelCheckpoint(every_n_epochs=5, save_top_k=-1),
+            LatentWAMModelCheckpoint(
+                every_n_epochs=5, save_top_k=-1, export_safetensors=self.config.training.export_safetensors
+            ),
             pl.callbacks.LearningRateMonitor(logging_interval="step"),
         ]
 

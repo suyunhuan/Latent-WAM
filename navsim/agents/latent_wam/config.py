@@ -111,10 +111,12 @@ class RuntimeConfig:
 
 @dataclass
 class TrainingConfig:
-    """Optimizer and target-encoder settings."""
+    """Optimizer, target-encoder, and temporal-attention settings."""
 
     learning_rate: float = 2e-4
     target_momentum: float = 0.999
+    temporal_attention_mask: str = "block_diagonal"
+    export_safetensors: bool = False
 
     def validate(self) -> None:
         """Validate training hyperparameters."""
@@ -122,6 +124,10 @@ class TrainingConfig:
             raise ValueError("training.learning_rate must be positive")
         if not 0.0 <= self.target_momentum <= 1.0:
             raise ValueError("training.target_momentum must be in [0, 1]")
+        if self.temporal_attention_mask not in ("block_diagonal", "block_causal"):
+            raise ValueError("training.temporal_attention_mask must be 'block_diagonal' or 'block_causal'")
+        if not isinstance(self.export_safetensors, bool):
+            raise ValueError("training.export_safetensors must be a boolean")
 
 
 @dataclass

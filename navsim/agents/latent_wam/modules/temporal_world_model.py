@@ -265,17 +265,23 @@ class TemporalWorldModel(nn.Module):
             decoder_layer=decoder_layer, num_layers=config.transformer.num_layers
         )
 
-    def get_attention_mask(self, seq_len, block_size):
-        mask = torch.zeros((seq_len, seq_len))
-        num_blocks = seq_len // block_size
+    def get_attention_mask(self, seq_len: int, block_size: int) -> torch.Tensor:
+        """Build the additive mask shared by self- and cross-attention.
+
+        Rows are prediction blocks and columns are source blocks. Cross-attention
+        sources are shifted one sampled timestep behind their corresponding
+        predictions, so ``key_block <= query_block`` exposes only past observations.
+        """
         assert seq_len % block_size == 0, "seq_len must be divisible by block_size"
-
-        for i in range(num_blocks):
-            start = i * block_size
-            end = (i + 1) * block_size
-            mask[start:end, start:end] = 1
-
-        return mask.masked_fill(mask == 0, float("-inf")).masked_fill(mask == 1, float(0.0))
+        block_indices = torch.arange(seq_len) // block_size
+        mode = self._config.training.temporal_attention_mask
+        if mode == "block_diagonal":
+            allowed = block_indices[:, None] == block_indices[None, :]
+        elif mode == "block_causal":
+            allowed = block_indices[None, :] <= block_indices[:, None]
+        else:
+            raise ValueError(f"unsupported temporal attention mask: {mode!r}")
+        return torch.zeros((seq_len, seq_len)).masked_fill(~allowed, float("-inf"))
 
     def forward(self, query, keyval, time_frames, height, width, views=None, tgt_mask=None, memory_mask=None):
         """Forward pass of the temporal world model.

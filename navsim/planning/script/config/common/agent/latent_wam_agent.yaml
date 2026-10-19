@@ -53,6 +53,8 @@ config:
     _target_: navsim.agents.latent_wam.config.TrainingConfig
     learning_rate: 2.0e-4
     target_momentum: 0.999
+    temporal_attention_mask: block_diagonal
+    export_safetensors: false
 
 checkpoint_path: null
 build_target_encoder: false
