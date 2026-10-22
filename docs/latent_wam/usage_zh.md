@@ -258,7 +258,7 @@ CSV 聚合行中的 `score` 乘以 100 后可与仓库首页的论文结果比�
 
 ## 从头训练 Latent WAM
 
-从头训练不需要正式 Latent WAM checkpoint，但需要 NAVSIM `navtrain` 数据、DINOv2-Base、
+从头训练不需要正式 Latent WAM checkpoint，但需要 NAVSIM `trainval` 数据、DINOv2-Base、
 WorldMirror 和 Latent WAM 分片缓存。训练采用 `[-1.5, 0.0, 2.0, 4.0]` 秒四帧 teacher forcing。
 
 WorldMirror 只在提取几何监督时加载，训练循环和正式推理路径都不会实例化 WorldMirror。
@@ -271,14 +271,14 @@ python navsim/planning/script/run_latent_wam_caching.py \
   agent=latent_wam_agent \
   agent.config.vision.model_id="$DINOV2_PATH" \
   agent.config.geometry.model_id="$WORLD_MIRROR_PATH" \
-  train_test_split=navtrain \
-  cache_path="$NAVSIM_EXP_ROOT/latent_wam_cache"
+  train_test_split=trainval \
+  cache_path="$NAVSIM_EXP_ROOT/cache"
 ```
 
 可以删除 DINOv2 override 以使用 Hugging Face 标识。cache 生成会从配置的模型目录加载 WorldMirror
 并提取 geometry。唯一 NAVSIM frame 被写入
 边界对齐的 image/geometry safetensors shard，sample 通过 Parquet 索引引用四个 frame token。只有
-`$NAVSIM_EXP_ROOT/latent_wam_cache/manifest.json` 发布后，缓存才可用于训练。
+`$NAVSIM_EXP_ROOT/cache/manifest.json` 发布后，缓存才可用于训练。
 
 中断后重启会按 frame token、tensor 元数据和文件大小复用已完成 shard；只有需要重建全部 shard 时才添加
 `force_cache_computation=true`。旧 sample-level 缓存没有兼容 reader，必须重新生成。详见
@@ -290,8 +290,8 @@ python navsim/planning/script/run_latent_wam_caching.py \
 
 ```bash
 cd "$NAVSIM_DEVKIT_ROOT"
-NNODES=2 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
-MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
+NNODES=2 NPROC_PER_NODE=8 TRAIN_TEST_SPLIT=trainval CACHE_PATH="$NAVSIM_EXP_ROOT/cache" \
+NODE_RANK="$NODE_RANK" MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
 DINOV2_PATH="$DINOV2_PATH" WORLD_MIRROR_PATH="$WORLD_MIRROR_PATH" \
 bash scripts/run_dataset_caching_multi_node.sh distributed_dry_run=true
 ```
@@ -302,41 +302,36 @@ rank 0 校验、合并 Parquet fragment 并发布最终 manifest。同一缓存�
 
 ### 3. 训练
 
-```bash
-cd "$NAVSIM_DEVKIT_ROOT"
-python navsim/planning/script/run_training.py \
-  agent=latent_wam_agent \
-  agent.build_target_encoder=true \
-  agent.config.vision.model_id="$DINOV2_PATH" \
-  agent.config.geometry.model_id="$WORLD_MIRROR_PATH" \
-  use_cache_without_dataset=true \
-  force_cache_computation=false \
-  cache_path="$NAVSIM_EXP_ROOT/latent_wam_cache" \
-  train_test_split=navtrain \
-  experiment_name=latent_wam_train
-```
+在每个节点各执行一次启动脚本，并使用相同的共享缓存和输出路径。
+默认入口为 `all_navtrain_training`，将 train 和 val 日志合并训练，保留 7 月复现的
+100 个 epoch、BF16、学习率峰值 `2e-4`、余弦衰减终值 `1e-6`、每个 DataLoader 进程
+12 个 worker，以及每轮监控 5 个验证 batch。这里的验证 loss 来自训练数据子集。
+缓存应覆盖 `trainval`，如上面的生成命令所示；已有匹配的 trainval 缓存可直接复用。
 
-多机训练时，在每个节点各执行一次启动脚本，并使用相同的共享缓存和输出路径。
-脚本默认值与已验证的本地训练一致：BF16、每卡 batch size 8、每个 DataLoader 进程
-12 个 worker、25 个 epoch、学习率 `2e-4`，cache 路径为 `/mnt/oss_data/latent-wam/cache`。
-`BATCH_SIZE` 是每卡 batch size，因此 global batch size 为
-`NNODES * NPROC_PER_NODE * BATCH_SIZE * ACCUMULATE_GRAD_BATCHES`。
+默认拓扑为 8 节点 × 8 卡，每卡 batch 8，梯度累积 1：
+`NNODES * NPROC_PER_NODE * BATCH_SIZE * ACCUMULATE_GRAD_BATCHES = 512`。
+采样使用 `global`，时序 attention 默认使用块下三角 `block_causal`，每 5 个 epoch 保存完整 `.ckpt`。
 
 ```bash
 cd "$NAVSIM_DEVKIT_ROOT"
-NNODES=2 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
+NNODES=8 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
 MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
 bash scripts/training/run_latent_wam_training_multi_node.sh
 ```
 
-该脚本兼容分布式缓存脚本使用的 `MLP_WORKER_NUM`、`MLP_ROLE_INDEX`、`MLP_WORKER_0_HOST` 和
-`MLP_WORKER_0_PORT` fallback。脚本默认使用与本地训练相同的 experiment UID；启动新实验时显式
-设置 `NAVSIM_EXPERIMENT_UID`。所有节点必须一致地解析 `NAVSIM_EXP_ROOT`、`CACHE_PATH` 和模型路径。
-脚本末尾的额外参数会作为 Hydra override 传递；例如添加
-`resume_ckpt_path=/shared/checkpoints/last.ckpt` 可恢复 Lightning checkpoint。
+该脚本兼容 `MLP_WORKER_NUM`、`MLP_ROLE_INDEX`、`MLP_WORKER_0_HOST` 和
+`MLP_WORKER_0_PORT` 集群变量。单卡运行可设置 `NNODES=1 NPROC_PER_NODE=1`，此时有效 batch 为 8。
+`BATCH_SIZE`、`MAX_EPOCHS`、`ACCUMULATE_GRAD_BATCHES`、`LIMIT_VAL_BATCHES`、`LEARNING_RATE`
+和 `CACHE_SAMPLER_MODE` 也可通过环境变量覆盖。
+
+需要独立的 train/val 划分时，设置 `TRAINING_CONFIG=default_training`；完整验证设置
+`LIMIT_VAL_BATCHES=1.0`。默认 experiment UID 为 `navtrain_bs512_epoch100_lr2e-4_global`，
+新实验可设置 `NAVSIM_EXPERIMENT_UID`。所有节点必须一致地解析 `NAVSIM_EXP_ROOT`、`CACHE_PATH`
+和模型路径。脚本末尾的额外参数会作为 Hydra override 传递；例如添加
+`resume_ckpt_path=/shared/checkpoints/last.ckpt` 可恢复兼容的 Lightning checkpoint。
 
 删除本地 DINOv2 override 即可使用 `facebook/dinov2-base`。训练产物、Lightning 日志和周期性
-checkpoint 保存在 `$NAVSIM_EXP_ROOT/latent_wam_train/<experiment_uid>/`。target DINO encoder 从
+checkpoint 保存在 `$NAVSIM_EXP_ROOT/training/<experiment_uid>/`。target DINO encoder 从
 online encoder 初始化，并在训练中通过 EMA 更新。loss 定义和分布式日志行为见
 [训练说明](training.md)。
 
@@ -348,6 +343,6 @@ cache 生成和训练应使用相同的 `agent.config.geometry.model_id` 值，�
 可设置 `validate_cache_headers=true`，逐个检查 shard 的 tensor key、shape 和 dtype。这个可选审计
 会在每个 rank 上分别为 train 和 validation dataset 执行，在远程存储上可能较慢。
 
-训练默认使用 locality-aware shard shuffle 和每 worker 8-entry shard LRU。设置
+训练默认使用 global sample shuffle 和每 worker 8-entry shard LRU。设置
 `cache_staging_path=/local/nvme/latent_wam_cache` 可在训练前将共享缓存复制到节点本地 NVMe；设置
-`cache_sampler_mode=global` 可运行全局随机吞吐对照。
+`cache_sampler_mode=locality` 可切换到 shard-local block shuffle。

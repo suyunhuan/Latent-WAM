@@ -103,7 +103,10 @@ The output is `$NAVSIM_EXP_ROOT/latent_wam_eval/navtest.csv`; EPDMS is the
 
 ## Training
 
-Training requires NAVSIM navtrain, DINOv2-Base, and WorldMirror for geometry-cache generation.
+Training requires NAVSIM trainval, DINOv2-Base, and WorldMirror for geometry-cache generation.
+The default recipe trains on train + val for 100 epochs with 8 nodes × 8 GPUs, batch 8 per GPU,
+no gradient accumulation (global batch 512), BF16, global cache shuffle, and block-causal temporal attention. Learning rate peaks at
+`2e-4` and decays to `1e-6`; five validation batches are monitored and a checkpoint is saved every five epochs.
 Start with [cache generation and training commands](docs/latent_wam/usage.md#train-latent-wam-from-scratch).
 
 Further documentation:

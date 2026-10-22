@@ -12,22 +12,45 @@ Losses are preserved from the final implementation:
 - cosine geometry alignment loss;
 - command cross-entropy plus velocity/acceleration MSE.
 
+## Default reproduction recipe
+
+The default launcher uses `all_navtrain_training`: train and validation logs are
+combined for training, with five validation batches monitored after each epoch.
+Those validation losses describe a training-data subset, not a held-out split.
+
+The recipe uses eight nodes with eight GPUs each, batch size 8 per GPU, and no
+gradient accumulation: the effective global batch is `8 * 8 * 8 * 1 = 512`.
+It keeps the July reproduction's 100 epochs, BF16, Adam, peak learning rate
+`2e-4`, 10% linear warmup from `2e-6`, cosine decay to `1e-6`, target-encoder EMA
+momentum 0.999, and one full `.ckpt` every five epochs. New experiments use
+`block_causal` attention so each prediction block can read all earlier source
+blocks. The model dimensions, losses, and teacher-forcing timestamps are
+unchanged. Cache sampling uses `global` rather than the July run's `locality`
+order. No cache-format or fingerprint change is required.
+
+Set `TRAINING_CONFIG=default_training` to train on the separate training logs
+and keep validation logs out of training. Set `LIMIT_VAL_BATCHES=1.0` for full
+validation, or `LIMIT_VAL_BATCHES=0` to skip it. Other launcher settings remain
+explicitly overridable.
+
 ## Temporal attention modes
 
 `agent.config.training.temporal_attention_mask` selects the mask used by both
 world-model self-attention and cross-attention:
 
-- `block_diagonal` (default): each prediction block reads only its paired source
-  block. Configurations that omit the field retain the released behavior.
-- `block_causal`: each prediction block reads its paired source and all earlier
+- `block_causal` (default for new Hydra runs): each prediction block reads its paired source and all earlier
   source blocks; prediction queries can also attend to earlier query blocks.
   Attention within each block remains unrestricted.
+- `block_diagonal`: each prediction block reads only its paired source block,
+  matching the released model and July reproduction.
 
-For a new causal experiment, pass these overrides to the existing training launcher:
+The public agent YAML explicitly selects `block_causal`. Legacy configurations
+that omit the field still resolve to `block_diagonal`, preserving their behavior.
+For block-diagonal reproduction, pass these overrides to the training launcher:
 
 ```text
-agent.config.training.temporal_attention_mask=block_causal
-experiment_uid=navtrain_block_causal
+agent.config.training.temporal_attention_mask=block_diagonal
+experiment_uid=navtrain_block_diagonal
 ```
 
 The token order and 3D RoPE coordinates remain unchanged: each block contains one
@@ -46,7 +69,9 @@ rollout to current-frame trajectory inference.
 
 Lightning checkpoints record `latent_wam_temporal_attention_mask`. Exact resume
 requires a matching mode; checkpoints without the field are treated as
-`block_diagonal`. To change modes, start a new run initialized from weights,
+`block_diagonal`. To resume a diagonal checkpoint exactly, explicitly set
+`agent.config.training.temporal_attention_mask=block_diagonal`.
+To change modes, start a new run initialized from weights,
 without restoring the old optimizer or scheduler. Parameter names and shapes
 are unchanged, and released safetensors remain strictly loadable. The mask mode
 is present in the saved Hydra configuration and logged at module construction.
@@ -142,8 +167,8 @@ safetensors and is updated with EMA momentum 0.999.
 
 The cache stores preprocessed `uint8 [3,224,448,3]` images once per unique
 frame. The model moves them to the accelerator and applies only DINO rescaling
-and normalization. Locality-aware block shuffle is the default; use
-`cache_sampler_mode=global` only for throughput comparison. A node-local copy
+and normalization. Global sample shuffle is the default; use
+`cache_sampler_mode=locality` for shard-local block shuffle. A node-local copy
 can be enabled with `cache_staging_path=/local/nvme/latent_wam_cache`.
 
 ## Cache startup validation
@@ -172,9 +197,9 @@ The launcher maps `NNODES`, `NPROC_PER_NODE`, `NODE_RANK`, `MASTER_ADDR`, and
 cache generation. `BATCH_SIZE` is per device; gradient accumulation also
 multiplies the effective global batch size.
 
-The launcher defaults to the experiment UID and concrete cache/model paths used
-by the verified local run; override `NAVSIM_EXPERIMENT_UID` when starting a new
-experiment. The cache, experiment root, checkpoint path, and local model paths
+The default experiment UID is `navtrain_bs512_epoch100_lr2e-4_global`, distinct
+from the July run. Override `NAVSIM_EXPERIMENT_UID` when starting a new experiment.
+The cache, experiment root, checkpoint path, and local model paths
 must resolve consistently across nodes. Extra command-line arguments are
 passed through as Hydra overrides, including `resume_ckpt_path` for exact
 Lightning resume.

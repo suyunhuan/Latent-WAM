@@ -100,7 +100,11 @@ EPDMS 为 `average_all_frames` 行的 `score × 100`。
 
 ## 训练
 
-训练需要 NAVSIM navtrain、DINOv2-Base，以及用于生成几何缓存的 WorldMirror。
+训练需要 NAVSIM trainval、DINOv2-Base，以及用于生成几何缓存的 WorldMirror。
+默认将 train 和 val 合并训练 100 个 epoch，使用 8 节点 × 8 卡、每卡 batch 8、无梯度累积
+（global batch 512）、BF16、global 缓存采样和块下三角 `block_causal` 时序 attention。
+学习率峰值为 `2e-4`，最终衰减到 `1e-6`；
+每轮监控 5 个验证 batch，每 5 个 epoch 保存 checkpoint。
 具体命令见[缓存生成与训练](docs/latent_wam/usage_zh.md#从头训练-latent-wam)。
 
 更多文档：

@@ -114,11 +114,12 @@ Use `distributed_dry_run=true` to inspect source visibility and each rank's
 deterministic plan summary without loading WorldMirror. Run only one coordinated
 `torchrun` job against a cache root at a time.
 
-## Training locality and optional staging
+## Training sampling and optional staging
 
-Training uses locality-aware block shuffle by default: shard-local sample
-buckets and their contents are shuffled deterministically before balanced DDP
-distribution. Set `cache_sampler_mode=global` for the comparison mode. Each
+Training uses `cache_sampler_mode=global` by default: all sample indices are
+shuffled deterministically per epoch before balanced DDP distribution, with
+padding only for a non-divisible distributed tail. Set `cache_sampler_mode=locality`
+to shuffle shard-local sample buckets and their contents instead. Each
 DataLoader worker keeps a small shard LRU; configure it with
 `cache_shard_lru`.
 

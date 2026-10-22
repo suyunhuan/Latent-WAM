@@ -191,7 +191,7 @@ def main(cfg: DictConfig) -> None:
         global_rank = int(os.environ.get("RANK", "0"))
         train_sampler = LocalityAwareDistributedSampler(
             train_data.sample_locality,
-            mode=str(cfg.get("cache_sampler_mode", "locality")),
+            mode=str(cfg.get("cache_sampler_mode", "global")),
             shuffle=True,
             seed=int(cfg.seed),
             rank=global_rank,

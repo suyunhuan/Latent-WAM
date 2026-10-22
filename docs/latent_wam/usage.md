@@ -266,7 +266,7 @@ by 100 to compare with the paper results in the root README.
 
 ## Train Latent WAM from scratch
 
-Training does not require the official Latent WAM checkpoint. It requires the NAVSIM `navtrain` data,
+Training does not require the official Latent WAM checkpoint. It requires the NAVSIM `trainval` data,
 DINOv2-Base, WorldMirror, and a Latent WAM sharded cache. The training path is four-frame teacher forcing at
 `[-1.5, 0.0, 2.0, 4.0]` seconds.
 
@@ -281,14 +281,14 @@ python navsim/planning/script/run_latent_wam_caching.py \
   agent=latent_wam_agent \
   agent.config.vision.model_id="$DINOV2_PATH" \
   agent.config.geometry.model_id="$WORLD_MIRROR_PATH" \
-  train_test_split=navtrain \
-  cache_path="$NAVSIM_EXP_ROOT/latent_wam_cache"
+  train_test_split=trainval \
+  cache_path="$NAVSIM_EXP_ROOT/cache"
 ```
 
 The DINOv2 override may be removed to use its Hugging Face identifier. Cache generation loads WorldMirror from
 the configured model directory to extract geometry. Unique
 NAVSIM frames are packed into aligned image/geometry safetensors shards; samples reference four frame tokens through Parquet indices.
-The cache becomes trainable only when `$NAVSIM_EXP_ROOT/latent_wam_cache/manifest.json` is published.
+The cache becomes trainable only when `$NAVSIM_EXP_ROOT/cache/manifest.json` is published.
 
 Completed shards with matching frame tokens, tensor metadata, and file sizes are reused after an interrupted run. Add
 `force_cache_computation=true` only to rebuild every shard. Older sample-level caches have no compatibility
@@ -300,8 +300,8 @@ First inspect source visibility and the local plan summary on every node without
 
 ```bash
 cd "$NAVSIM_DEVKIT_ROOT"
-NNODES=2 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
-MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
+NNODES=2 NPROC_PER_NODE=8 TRAIN_TEST_SPLIT=trainval CACHE_PATH="$NAVSIM_EXP_ROOT/cache" \
+NODE_RANK="$NODE_RANK" MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
 DINOV2_PATH="$DINOV2_PATH" WORLD_MIRROR_PATH="$WORLD_MIRROR_PATH" \
 bash scripts/run_dataset_caching_multi_node.sh distributed_dry_run=true
 ```
@@ -312,40 +312,40 @@ Run only one `torchrun` job against a cache root at a time.
 
 ### 3. Train
 
-```bash
-cd "$NAVSIM_DEVKIT_ROOT"
-python navsim/planning/script/run_training.py \
-  agent=latent_wam_agent \
-  agent.build_target_encoder=true \
-  agent.config.vision.model_id="$DINOV2_PATH" \
-  agent.config.geometry.model_id="$WORLD_MIRROR_PATH" \
-  use_cache_without_dataset=true \
-  force_cache_computation=false \
-  cache_path="$NAVSIM_EXP_ROOT/latent_wam_cache" \
-  train_test_split=navtrain \
-  experiment_name=latent_wam_train
-```
+Run the launcher once on each node with the same shared cache and output paths.
+The default uses `all_navtrain_training`, combining train and val logs for training.
+It keeps the July reproduction's 100 epochs, BF16, peak learning rate `2e-4`, cosine
+endpoint `1e-6`, 12 DataLoader workers, and five monitored validation batches per epoch.
+These validation losses come from a training-data subset. Cache generation must cover
+`trainval`, as in the commands above; an existing matching trainval cache can be reused.
 
-For multi-node training, run the launcher once on every node with the same shared cache/output paths. The launcher
-defaults match the verified local run: BF16, batch size 8 per device, 12 DataLoader workers, 25 epochs, learning rate
-`2e-4`, and cache path `/mnt/oss_data/latent-wam/cache`. `BATCH_SIZE` is per device, so the global batch size is
-`NNODES * NPROC_PER_NODE * BATCH_SIZE * ACCUMULATE_GRAD_BATCHES`.
+The default topology is 8 nodes × 8 GPUs, batch size 8 per GPU, with gradient accumulation 1:
+`NNODES * NPROC_PER_NODE * BATCH_SIZE * ACCUMULATE_GRAD_BATCHES = 512`.
+Sampling uses `global` and temporal attention uses `block_causal` (block lower triangular).
+A full `.ckpt` is saved every five epochs.
 
 ```bash
 cd "$NAVSIM_DEVKIT_ROOT"
-NNODES=2 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
+NNODES=8 NPROC_PER_NODE=8 NODE_RANK="$NODE_RANK" \
 MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
 bash scripts/training/run_latent_wam_training_multi_node.sh
 ```
 
-The launcher accepts the same `MLP_WORKER_NUM`, `MLP_ROLE_INDEX`, `MLP_WORKER_0_HOST`, and `MLP_WORKER_0_PORT`
-fallbacks as distributed cache generation. It uses the same default experiment UID as the local run; set
-`NAVSIM_EXPERIMENT_UID` explicitly when starting a new experiment. All nodes must resolve `NAVSIM_EXP_ROOT`,
-`CACHE_PATH`, and model paths consistently. Additional arguments are forwarded as Hydra overrides; for example,
-append `resume_ckpt_path=/shared/checkpoints/last.ckpt` to resume a Lightning checkpoint.
+The launcher accepts `MLP_WORKER_NUM`, `MLP_ROLE_INDEX`, `MLP_WORKER_0_HOST`, and
+`MLP_WORKER_0_PORT` fallbacks for cluster topology. Set `NNODES=1 NPROC_PER_NODE=1` to
+use one GPU; the effective batch then becomes 8. `BATCH_SIZE`, `MAX_EPOCHS`,
+`ACCUMULATE_GRAD_BATCHES`, `LIMIT_VAL_BATCHES`, `LEARNING_RATE`, and `CACHE_SAMPLER_MODE`
+can also be overridden through the environment.
 
-Remove the local DINOv2 override to use `facebook/dinov2-base`. Training outputs, Lightning logs, and periodic
-checkpoints are stored under `$NAVSIM_EXP_ROOT/latent_wam_train/<experiment_uid>/`. The target DINO encoder is
+Set `TRAINING_CONFIG=default_training` for separate train/val logs, and
+`LIMIT_VAL_BATCHES=1.0` for full validation. The default experiment UID is
+`navtrain_bs512_epoch100_lr2e-4_global`; set `NAVSIM_EXPERIMENT_UID` for a new run.
+All nodes must resolve `NAVSIM_EXP_ROOT`, `CACHE_PATH`, and model paths consistently.
+Additional arguments are forwarded as Hydra overrides; for example,
+`resume_ckpt_path=/shared/checkpoints/last.ckpt` resumes a compatible Lightning checkpoint.
+
+Remove the local DINOv2 override to use `facebook/dinov2-base`. Launcher outputs, Lightning logs, and periodic
+checkpoints are stored under `$NAVSIM_EXP_ROOT/training/<experiment_uid>/`. The target DINO encoder is
 initialized from the online encoder and updated with EMA during training. See
 [training details](training.md) for the loss definitions and distributed logging behavior.
 
@@ -358,6 +358,6 @@ to audit every shard's tensor keys, shapes, and dtypes after a manual copy or mo
 for both train and validation datasets on every rank and can be slow on
 remote storage.
 
-Training uses locality-aware shard shuffle and an eight-entry per-worker shard LRU by default. Set
+Training uses global sample shuffle and an eight-entry per-worker shard LRU by default. Set
 `cache_staging_path=/local/nvme/latent_wam_cache` to copy a shared cache to node-local NVMe before training,
-or `cache_sampler_mode=global` for a global-random throughput comparison.
+or `cache_sampler_mode=locality` for shard-local block shuffle.

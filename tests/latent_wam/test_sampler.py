@@ -53,3 +53,26 @@ def test_global_mode_is_deterministic_per_epoch_and_changes_between_epochs() -> 
     assert epoch_zero != epoch_one
     sampler.set_epoch(0)
     assert list(sampler) == epoch_zero
+
+
+def test_global_sampler_balances_64_ranks_and_only_repeats_padding() -> None:
+    from collections import Counter
+
+    rank_indices = [
+        list(
+            LocalityAwareDistributedSampler(
+                locality_ids=[index // 7 for index in range(257)],
+                mode="global",
+                seed=11,
+                rank=rank,
+                world_size=64,
+            )
+        )
+        for rank in range(64)
+    ]
+    counts = Counter(index for indices in rank_indices for index in indices)
+    assert {len(indices) for indices in rank_indices} == {5}
+    assert set(counts) == set(range(257))
+    assert sum(counts.values()) == 320
+    assert sum(count - 1 for count in counts.values()) == 63
+    assert max(counts.values()) == 2

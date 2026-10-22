@@ -39,7 +39,7 @@ def test_hydra_config_builds_typed_config() -> None:
 
     assert isinstance(config, LatentWAMConfig)
     assert config.data.time_offsets_s == (-1.5, 0.0, 2.0, 4.0)
-    assert config.training.temporal_attention_mask == "block_diagonal"
+    assert config.training.temporal_attention_mask == "block_causal"
 
 
 @pytest.mark.parametrize("mode", ["block_diagonal", "block_causal"])
