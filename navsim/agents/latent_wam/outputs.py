@@ -26,6 +26,8 @@ class TrainingOutput(TrajectoryPrediction, total=False):
     cmd_gt: torch.Tensor
     velocity_gt: torch.Tensor
     acceleration_gt: torch.Tensor
+    # Current-frame driving-command index used by the trajectory head (for mode CE).
+    mode_command_gt: torch.Tensor
 
 
 LossDict = Dict[str, torch.Tensor]

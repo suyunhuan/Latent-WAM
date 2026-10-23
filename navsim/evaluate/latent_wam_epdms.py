@@ -27,6 +27,9 @@ class EpdmsEvaluationConfig:
     max_scenarios: Optional[int] = None
     human_penalty_filter: bool = True
     tokens: Optional[Sequence[str]] = None
+    # Inference mode selection; default matches the released command-index path.
+    mode_select: str = "command"
+    hybrid_margin: float = 0.0
 
 
 class _MetricCacheStore:
@@ -155,6 +158,20 @@ def _select_tokens(
     return target_tokens, eval_tokens
 
 
+def build_latent_wam_config(config: EpdmsEvaluationConfig):
+    """Build LatentWAMConfig for evaluation, including inference mode_select."""
+    from navsim.agents.latent_wam.config import LatentWAMConfig, RuntimeConfig, VisionConfig
+    from navsim.agents.latent_wam.mode_select import resolve_mode_select
+
+    runtime = RuntimeConfig(
+        mode_select=resolve_mode_select(config.mode_select),
+        hybrid_margin=float(config.hybrid_margin),
+    )
+    if config.vision_model:
+        return LatentWAMConfig(vision=VisionConfig(model_id=config.vision_model), runtime=runtime)
+    return LatentWAMConfig(runtime=runtime)
+
+
 def evaluate_epdms(config: EpdmsEvaluationConfig) -> pd.DataFrame:
     """Evaluate Latent WAM and return a standard NAVSIM ePDMS DataFrame.
 
@@ -170,7 +187,6 @@ def evaluate_epdms(config: EpdmsEvaluationConfig) -> pd.DataFrame:
     from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 
     from navsim.agents.latent_wam.agent import LatentWAMAgent
-    from navsim.agents.latent_wam.config import LatentWAMConfig, VisionConfig
     from navsim.common.dataclasses import PDMResults, SensorConfig
     from navsim.common.dataloader import SceneLoader
     from navsim.evaluate.pdm_score import pdm_score
@@ -196,9 +212,7 @@ def evaluate_epdms(config: EpdmsEvaluationConfig) -> pd.DataFrame:
     metric_cache_loader = _MetricCacheStore(config.metric_cache_path)
     target_tokens, eval_tokens = _select_tokens(scene_loader, metric_cache_loader, config)
 
-    model_config = (
-        LatentWAMConfig(vision=VisionConfig(model_id=config.vision_model)) if config.vision_model else LatentWAMConfig()
-    )
+    model_config = build_latent_wam_config(config)
     agent = LatentWAMAgent(config=model_config, checkpoint_path=str(config.checkpoint_path))
     agent.initialize()
     agent.eval()

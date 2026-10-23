@@ -13,6 +13,11 @@ from transformers.models.dinov2 import Dinov2Model
 
 from navsim.agents.latent_wam.cache import LatentWAMFeatures
 from navsim.agents.latent_wam.config import LatentWAMConfig
+from navsim.agents.latent_wam.mode_select import (
+    apply_mode_selection,
+    resolve_hybrid_margin,
+    resolve_mode_select,
+)
 from navsim.agents.latent_wam.modules.temporal_world_model import TemporalWorldModel
 from navsim.agents.latent_wam.outputs import LossDict, TrainingOutput, TrajectoryPrediction
 from navsim.agents.latent_wam.preprocessing import DINO_CROP_SIZE, normalize_dino_images
@@ -252,7 +257,13 @@ class LatentWAMModel(nn.Module):
             scene_start_index=self.config.data.time_offsets_s.index(0.0),
         )
         commands = ego_status[:, None, :4].argmax(dim=-1).to(self.scene_embeds.device)
-        return self._decode_trajectories(keyval, commands)
+        prediction = self._decode_trajectories(keyval, commands)
+        strategy = resolve_mode_select(self.config.runtime.mode_select)
+        margin = resolve_hybrid_margin(self.config.runtime.hybrid_margin)
+        prediction, _disagree = apply_mode_selection(
+            prediction, commands[:, 0], strategy, hybrid_margin=margin
+        )
+        return prediction
 
     def forward_train(
         self,
@@ -284,6 +295,8 @@ class LatentWAMModel(nn.Module):
         encoded, keyval, scene_queries = self._encode_frames(pixel_values, ego_status, self.vision_encoder)
         commands = ego_status[..., :4].argmax(dim=-1)
         output: TrainingOutput = dict(self._decode_trajectories(keyval, commands))
+        current_idx = self.config.data.time_offsets_s.index(0.0)
+        output["mode_command_gt"] = commands[:, current_idx]
 
         with torch.no_grad():
             target_encoded = self._encode_with_scene_queries(
@@ -341,15 +354,29 @@ class LatentWAMModel(nn.Module):
         targets: Mapping[str, torch.Tensor],
         predictions: TrainingOutput,
     ) -> LossDict:
-        """Compute the loss used by the released epoch84 training path."""
+        """Compute the loss used by the released epoch84 training path.
+
+        Optional extensions (disabled by default weights):
+        - ``losses.mode_classification``: CE on ``mode_logits`` toward WTA ``best_mode``
+          and/or GT command (``losses.mode_ce_target``).
+        - ``losses.trajectory_lateral_weight``: scale the lateral (y) residual inside
+          the trajectory L1 (``1.0`` matches the released isotropic L1).
+        """
         ground_truth = targets["trajectory"]
         all_trajectories = predictions["all_trajectories"]
         trajectory_distance = torch.norm(all_trajectories[..., :2] - ground_truth[:, None, :, :2], p=1, dim=-1)
         best_mode = trajectory_distance[:, :, -1].argmin(dim=-1)
         batch_indices = torch.arange(ground_truth.shape[0], device=ground_truth.device)
         best_trajectory = all_trajectories[batch_indices, best_mode]
+        residual = (best_trajectory - ground_truth).abs()
+        lateral_weight = float(self.config.losses.trajectory_lateral_weight)
+        if lateral_weight == 1.0:
+            trajectory_loss = residual.mean()
+        else:
+            axis_weights = residual.new_tensor([1.0, lateral_weight, 1.0])
+            trajectory_loss = (residual * axis_weights).mean()
         losses: LossDict = {
-            "trajectory_loss": F.l1_loss(best_trajectory, ground_truth) * self.config.losses.trajectory,
+            "trajectory_loss": trajectory_loss * self.config.losses.trajectory,
             "wm_loss": F.mse_loss(predictions["wm_next_latent"], predictions["gt_next_latent"])
             * self.config.losses.world_model,
         }
@@ -362,6 +389,27 @@ class LatentWAMModel(nn.Module):
         velocity_loss = F.mse_loss(predictions["velocity_pred"], predictions["velocity_gt"])
         acceleration_loss = F.mse_loss(predictions["acceleration_pred"], predictions["acceleration_gt"])
         losses["ego_status_loss"] = (cmd_loss + velocity_loss + acceleration_loss) * self.config.losses.ego_status
+
+        mode_ce_weight = float(self.config.losses.mode_classification)
+        if mode_ce_weight > 0:
+            mode_logits = predictions["mode_logits"]
+            ce_target = str(self.config.losses.mode_ce_target)
+            if ce_target == "best_mode":
+                mode_ce = F.cross_entropy(mode_logits, best_mode.long())
+            elif ce_target == "command":
+                mode_command = predictions.get("mode_command_gt")
+                if mode_command is None:
+                    raise ValueError("mode_ce_target='command' requires predictions['mode_command_gt']")
+                mode_ce = F.cross_entropy(mode_logits, mode_command.long())
+            else:
+                mode_command = predictions.get("mode_command_gt")
+                if mode_command is None:
+                    raise ValueError("mode_ce_target='both' requires predictions['mode_command_gt']")
+                mode_ce = 0.5 * (
+                    F.cross_entropy(mode_logits, best_mode.long())
+                    + F.cross_entropy(mode_logits, mode_command.long())
+                )
+            losses["mode_classification_loss"] = mode_ce * mode_ce_weight
         return losses
 
     @torch.no_grad()

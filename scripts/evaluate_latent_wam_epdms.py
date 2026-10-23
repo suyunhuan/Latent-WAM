@@ -40,6 +40,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="human_penalty_filter",
         help="Disable the NAVSIM human-penalty exemption (not recommended for reported ePDMS).",
     )
+    parser.add_argument(
+        "--mode-select",
+        default="command",
+        choices=["command", "mode_logits", "hybrid"],
+        help="Inference trajectory mode selection (default: command).",
+    )
+    parser.add_argument(
+        "--hybrid-margin",
+        type=float,
+        default=0.0,
+        help="For --mode-select=hybrid: override command when logit margin exceeds this.",
+    )
     args = parser.parse_args(argv)
     if args.max_scenarios is not None and args.max_scenarios < 1:
         raise ValueError("--max-scenarios must be positive")
@@ -59,6 +71,8 @@ def main(argv: list[str] | None = None) -> None:
             split=args.split,
             max_scenarios=args.max_scenarios,
             human_penalty_filter=args.human_penalty_filter,
+            mode_select=args.mode_select,
+            hybrid_margin=args.hybrid_margin,
         )
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
