@@ -13,6 +13,11 @@ from transformers.models.dinov2 import Dinov2Model
 
 from navsim.agents.latent_wam.cache import LatentWAMFeatures
 from navsim.agents.latent_wam.config import LatentWAMConfig
+from navsim.agents.latent_wam.mode_select import (
+    apply_mode_selection,
+    resolve_hybrid_margin,
+    resolve_mode_select,
+)
 from navsim.agents.latent_wam.modules.temporal_world_model import TemporalWorldModel
 from navsim.agents.latent_wam.outputs import LossDict, TrainingOutput, TrajectoryPrediction
 from navsim.agents.latent_wam.preprocessing import DINO_CROP_SIZE, normalize_dino_images
@@ -252,7 +257,13 @@ class LatentWAMModel(nn.Module):
             scene_start_index=self.config.data.time_offsets_s.index(0.0),
         )
         commands = ego_status[:, None, :4].argmax(dim=-1).to(self.scene_embeds.device)
-        return self._decode_trajectories(keyval, commands)
+        prediction = self._decode_trajectories(keyval, commands)
+        strategy = resolve_mode_select(self.config.runtime.mode_select)
+        margin = resolve_hybrid_margin(self.config.runtime.hybrid_margin)
+        prediction, _disagree = apply_mode_selection(
+            prediction, commands[:, 0], strategy, hybrid_margin=margin
+        )
+        return prediction
 
     def forward_train(
         self,

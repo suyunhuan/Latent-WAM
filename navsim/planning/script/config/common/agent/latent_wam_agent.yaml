@@ -48,6 +48,8 @@ config:
   runtime:
     _target_: navsim.agents.latent_wam.config.RuntimeConfig
     strict_checkpoint: true
+    mode_select: command
+    hybrid_margin: 0.0
 
   training:
     _target_: navsim.agents.latent_wam.config.TrainingConfig

@@ -25,6 +25,7 @@ from navsim.evaluate.latent_wam_epdms import (
     EpdmsEvaluationConfig,
     _MetricCacheStore,
     _select_tokens,
+    build_latent_wam_config,
     load_scene_filter,
 )
 
@@ -144,13 +145,7 @@ def stack_feature_batch(feature_rows: Sequence[dict], device) -> dict:
 
 def _latent_wam_model_config(config: EpdmsEvaluationConfig):
     """Build the exact model configuration shared by inference and PDM workers."""
-    from navsim.agents.latent_wam.config import LatentWAMConfig, VisionConfig
-
-    return (
-        LatentWAMConfig(vision=VisionConfig(model_id=config.vision_model))
-        if config.vision_model
-        else LatentWAMConfig()
-    )
+    return build_latent_wam_config(config)
 
 
 def infer_trajectories_batched(
@@ -163,6 +158,7 @@ def infer_trajectories_batched(
     from tqdm import tqdm
 
     from navsim.agents.latent_wam.agent import LatentWAMAgent
+    from navsim.agents.latent_wam.mode_select import resolve_mode_select
 
     if inference_batch_size < 1:
         raise ValueError("inference_batch_size must be positive")
@@ -175,6 +171,7 @@ def infer_trajectories_batched(
 
     scene_filter = load_scene_filter(config.split)
     model_config = _latent_wam_model_config(config)
+    strategy = resolve_mode_select(model_config.runtime.mode_select)
     agent = LatentWAMAgent(
         config=model_config, checkpoint_path=str(config.checkpoint_path)
     )
@@ -189,6 +186,8 @@ def infer_trajectories_batched(
     feature_builder = agent.get_feature_builders()[0]
     model_device = agent.model.scene_embeds.device
     batches: list[np.ndarray] = []
+    disagree_count = 0
+    sample_count = 0
     for begin in tqdm(
         range(0, len(tokens), inference_batch_size),
         desc="Batched trajectory inference",
@@ -202,13 +201,32 @@ def infer_trajectories_batched(
         ]
         features = stack_feature_batch(feature_rows, model_device)
         with torch.inference_mode():
-            batches.append(agent.forward(features)["trajectory"].detach().cpu().numpy())
+            output = agent.forward(features)
+            batches.append(output["trajectory"].detach().cpu().numpy())
+            command = features["ego_status"][..., :4].argmax(dim=-1)
+            logits_idx = output["mode_logits"].argmax(dim=-1)
+            disagree_count += int((logits_idx != command).sum().item())
+            sample_count += int(command.numel())
 
     trajectories = np.concatenate(batches, axis=0)
     if len(trajectories) != len(tokens):
         raise RuntimeError(
             f"trajectory count mismatch: expected {len(tokens)}, got {len(trajectories)}"
         )
+    print(
+        json.dumps(
+            {
+                "mode_select": strategy,
+                "samples": sample_count,
+                "command_logits_disagree": disagree_count,
+                "command_logits_disagree_rate": (
+                    disagree_count / sample_count if sample_count else 0.0
+                ),
+            },
+            indent=2,
+        ),
+        flush=True,
+    )
     return trajectories
 
 
@@ -526,9 +544,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Disable the NAVSIM human-penalty exemption.",
     )
     parser.add_argument(
+        "--mode-select",
+        default=None,
+        choices=["command", "mode_logits", "hybrid"],
+        help=(
+            "Inference trajectory mode selection. Default/omitted uses released "
+            "command-index behavior (or LATENT_WAM_MODE_SELECT if set)."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-margin",
+        type=float,
+        default=None,
+        help="For --mode-select=hybrid: override command when logit margin exceeds this.",
+    )
+    parser.add_argument(
+        "--tokens",
+        default=None,
+        help="Optional comma-separated token list (probe subset); ignores max-scenarios ordering.",
+    )
+    parser.add_argument(
         "--worker-token-file", type=Path, default=None, help=argparse.SUPPRESS
     )
     args = parser.parse_args(argv)
+    if args.tokens:
+        args.tokens = [token.strip() for token in args.tokens.split(",") if token.strip()]
+        if not args.tokens:
+            raise ValueError("--tokens must contain at least one token")
+    else:
+        args.tokens = None
     args.devices = parse_devices(args.devices)
     if args.max_scenarios is not None and args.max_scenarios < 1:
         raise ValueError("--max-scenarios must be positive")
@@ -546,6 +590,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _evaluation_config(args: argparse.Namespace) -> EpdmsEvaluationConfig:
+    mode_select = args.mode_select
+    if mode_select is None:
+        mode_select = os.environ.get("LATENT_WAM_MODE_SELECT", "command").strip() or "command"
+    hybrid_margin = (
+        args.hybrid_margin
+        if args.hybrid_margin is not None
+        else float(os.environ.get("LATENT_WAM_HYBRID_MARGIN", "0") or 0)
+    )
     return EpdmsEvaluationConfig(
         checkpoint_path=args.checkpoint,
         navsim_log_path=args.navsim_log_path,
@@ -555,6 +607,9 @@ def _evaluation_config(args: argparse.Namespace) -> EpdmsEvaluationConfig:
         split=args.split,
         max_scenarios=args.max_scenarios,
         human_penalty_filter=args.human_penalty_filter,
+        tokens=args.tokens,
+        mode_select=mode_select,
+        hybrid_margin=hybrid_margin,
     )
 
 
@@ -619,6 +674,12 @@ def _inference_worker_command(
         command.extend(["--vision-model", str(args.vision_model)])
     if not args.human_penalty_filter:
         command.append("--no-human-penalty-filter")
+    if args.mode_select is not None:
+        command.extend(["--mode-select", str(args.mode_select)])
+    if args.hybrid_margin is not None:
+        command.extend(["--hybrid-margin", str(args.hybrid_margin)])
+    if args.tokens is not None:
+        command.extend(["--tokens", ",".join(args.tokens)])
     return command
 
 

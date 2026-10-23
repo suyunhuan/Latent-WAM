@@ -107,6 +107,20 @@ class RuntimeConfig:
     """Runtime-only loading behavior."""
 
     strict_checkpoint: bool = True
+    # Inference mode index: "command" (released default), "mode_logits", or "hybrid".
+    # Env LATENT_WAM_MODE_SELECT overrides this at predict time.
+    mode_select: str = "command"
+    # For hybrid: override command when logit[best]-logit[command] exceeds this.
+    hybrid_margin: float = 0.0
+
+    def validate(self) -> None:
+        """Validate runtime inference options."""
+        from navsim.agents.latent_wam.mode_select import MODE_SELECT_CHOICES
+
+        if self.mode_select not in MODE_SELECT_CHOICES:
+            raise ValueError(f"runtime.mode_select must be one of {MODE_SELECT_CHOICES}")
+        if not isinstance(self.hybrid_margin, (int, float)):
+            raise ValueError("runtime.hybrid_margin must be a number")
 
 
 @dataclass
@@ -152,6 +166,7 @@ class LatentWAMConfig:
         self.trajectory.validate()
         self.losses.validate()
         self.data.validate()
+        self.runtime.validate()
         self.training.validate()
 
     @classmethod
