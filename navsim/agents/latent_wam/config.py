@@ -72,12 +72,29 @@ class LossConfig:
     world_model: float = 0.2
     geometry: float = 0.1
     ego_status: float = 0.2
+    # Optional mode-logit CE (0 keeps the released loss dict unchanged).
+    mode_classification: float = 0.0
+    # CE target for mode_logits: WTA best_mode, GT driving command, or mean of both.
+    mode_ce_target: str = "best_mode"
+    # Multiplier on the lateral (y) residual inside trajectory L1 (1.0 = released).
+    trajectory_lateral_weight: float = 1.0
 
     def validate(self) -> None:
         """Validate non-negative loss weights."""
-        values = (self.trajectory, self.world_model, self.geometry, self.ego_status)
+        values = (
+            self.trajectory,
+            self.world_model,
+            self.geometry,
+            self.ego_status,
+            self.mode_classification,
+            self.trajectory_lateral_weight,
+        )
         if any(value < 0 for value in values):
             raise ValueError("loss weights must be non-negative")
+        if self.mode_ce_target not in ("best_mode", "command", "both"):
+            raise ValueError("losses.mode_ce_target must be 'best_mode', 'command', or 'both'")
+        if self.trajectory_lateral_weight <= 0:
+            raise ValueError("losses.trajectory_lateral_weight must be positive")
 
 
 @dataclass

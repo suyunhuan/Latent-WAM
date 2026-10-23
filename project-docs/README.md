@@ -17,6 +17,7 @@ Fork：https://github.com/suyunhuan/Latent-WAM
 | [gpu-bootstrap.md](gpu-bootstrap.md) | 租机后环境引导命令顺序 |
 | [autodl-bootstrap-status.md](autodl-bootstrap-status.md) | AutoDL ePDMS 复现状态摘要（已去敏） |
 | [mode-select-inference-ab.md](mode-select-inference-ab.md) | C1 推理 mode_select A/B（smoke 89.14 vs 89.08） |
+| [mode-ce-c3-navmini.md](mode-ce-c3-navmini.md) | C3 mode CE 钩子说明；navmini-64 FT 回退至 ~84，勿作发布 |
 
 ## 媒体
 

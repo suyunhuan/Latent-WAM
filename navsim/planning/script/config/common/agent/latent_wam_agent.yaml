@@ -38,6 +38,10 @@ config:
     world_model: 0.2
     geometry: 0.1
     ego_status: 0.2
+    # 0.0 = released path (no mode CE). Override e.g. agent.config.losses.mode_classification=0.1
+    mode_classification: 0.0
+    mode_ce_target: best_mode
+    trajectory_lateral_weight: 1.0
 
   data:
     _target_: navsim.agents.latent_wam.config.DataConfig
