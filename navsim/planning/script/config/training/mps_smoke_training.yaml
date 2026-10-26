@@ -1,0 +1,59 @@
+# Apple Silicon (MPS) short continued-training smoke.
+# Forces float32, single device, tiny batch. Not for published metrics.
+hydra:
+  run:
+    dir: ${output_dir}
+  output_subdir: ${output_dir}/code/hydra
+  searchpath:
+    - pkg://navsim.planning.script.config.common
+  job:
+    chdir: False
+
+defaults:
+  - default_common
+  - default_evaluation
+  - all_train_val_test_log_split
+  - agent: latent_wam_agent
+  - _self_
+  - override train_test_split: trainval
+
+split: trainval
+cache_path: ${oc.env:NAVSIM_EXP_ROOT}/cache
+use_cache_without_dataset: true
+force_cache_computation: false
+seed: 0
+resume_ckpt_path: null
+cache_sampler_mode: global
+cache_shard_lru: 2
+cache_staging_path: null
+validate_cache_headers: false
+
+agent:
+  build_target_encoder: true
+
+dataloader:
+  params:
+    batch_size: 1
+    num_workers: 0
+    pin_memory: false
+    prefetch_factor: null
+
+trainer:
+  params:
+    max_epochs: 1
+    check_val_every_n_epoch: 1
+    val_check_interval: 1.0
+    limit_train_batches: 2
+    limit_val_batches: 1
+    accelerator: mps
+    devices: 1
+    strategy: auto
+    precision: 32-true
+    num_nodes: 1
+    num_sanity_val_steps: 0
+    fast_dev_run: false
+    accumulate_grad_batches: 1
+    gradient_clip_val: 45.0
+    gradient_clip_algorithm: norm
+    default_root_dir: ${output_dir}
+    log_every_n_steps: 1

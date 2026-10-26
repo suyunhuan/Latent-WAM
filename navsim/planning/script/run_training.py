@@ -14,6 +14,13 @@ from navsim.agents.abstract_agent import AbstractAgent
 from navsim.agents.latent_wam.agent import LatentWAMAgent
 from navsim.agents.latent_wam.cache import stage_cache
 from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
+from navsim.agents.latent_wam.device import (
+    describe_device,
+    lightning_accelerator,
+    pin_memory_enabled,
+    resolve_torch_device,
+    training_precision,
+)
 from navsim.agents.latent_wam.lightning_module import LatentWAMLightningModule
 from navsim.agents.latent_wam.sampler import LocalityAwareDistributedSampler
 from navsim.common.dataclasses import SceneFilter
@@ -186,6 +193,21 @@ def main(cfg: DictConfig) -> None:
     logger.info("Building Datasets")
     dataloader_parameters = dict(cfg.dataloader.params)
     trainer_parameters = dict(cfg.trainer.params)
+    train_device = resolve_torch_device()
+    # Apple MPS / CPU: force float32 and matching Lightning accelerator; leave CUDA recipes unchanged.
+    if train_device.type != "cuda":
+        trainer_parameters["accelerator"] = lightning_accelerator(train_device)
+        trainer_parameters["devices"] = 1
+        trainer_parameters["num_nodes"] = 1
+        trainer_parameters["strategy"] = "auto"
+        trainer_parameters["precision"] = training_precision(trainer_parameters.get("precision", "32-true"))
+        dataloader_parameters["pin_memory"] = pin_memory_enabled(train_device)
+        logger.info(
+            "Non-CUDA training device %s → accelerator=%s precision=%s",
+            describe_device(train_device),
+            trainer_parameters["accelerator"],
+            trainer_parameters["precision"],
+        )
     if isinstance(agent, LatentWAMAgent):
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
         global_rank = int(os.environ.get("RANK", "0"))

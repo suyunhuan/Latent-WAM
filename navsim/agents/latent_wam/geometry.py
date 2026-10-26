@@ -150,7 +150,7 @@ class WorldMirrorFeatureExtractor:
         Args:
             geometry: WorldMirror checkpoint and token-layout configuration.
             vision: Image preprocessing dimensions and model identifier.
-            device: Optional execution device; defaults to CUDA when available.
+            device: Optional execution device; defaults via ``resolve_torch_device``.
             worldmirror_root: Root of the checked-out WorldMirror submodule.
 
         Returns:
@@ -171,7 +171,12 @@ class WorldMirrorFeatureExtractor:
         except ImportError as error:
             raise RuntimeError("install transformers for WorldMirror preprocessing") from error
 
-        target_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            from navsim.agents.latent_wam.device import resolve_torch_device
+
+            target_device = resolve_torch_device()
+        else:
+            target_device = device
         model_directory = cls._resolve_model_directory(geometry.model_id)
         model = cls._load_visual_encoder(model_directory, target_device)
         processor = AutoImageProcessor.from_pretrained(vision.model_id)

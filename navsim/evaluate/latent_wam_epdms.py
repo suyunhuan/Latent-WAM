@@ -158,9 +158,10 @@ def _select_tokens(
 def evaluate_epdms(config: EpdmsEvaluationConfig) -> pd.DataFrame:
     """Evaluate Latent WAM and return a standard NAVSIM ePDMS DataFrame.
 
-    Model inference is performed on the available CUDA device. PDM simulation,
-    geometric scoring, and final pandas aggregation remain CPU operations in
-    the current NAVSIM implementation.
+    Model inference uses CUDA when available, otherwise Apple MPS (or CPU when
+    ``LATENT_WAM_DEVICE=cpu``). PDM simulation, geometric scoring, and pandas
+    aggregation remain CPU operations. Official published ePDMS numbers assume
+    CUDA; MPS/CPU smoke scores are not metric-parity claims.
     """
     import numpy as np
     import pandas as pd
@@ -171,6 +172,7 @@ def evaluate_epdms(config: EpdmsEvaluationConfig) -> pd.DataFrame:
 
     from navsim.agents.latent_wam.agent import LatentWAMAgent
     from navsim.agents.latent_wam.config import LatentWAMConfig, VisionConfig
+    from navsim.agents.latent_wam.device import describe_device, resolve_torch_device
     from navsim.common.dataclasses import PDMResults, SensorConfig
     from navsim.common.dataloader import SceneLoader
     from navsim.evaluate.pdm_score import pdm_score
@@ -183,8 +185,8 @@ def evaluate_epdms(config: EpdmsEvaluationConfig) -> pd.DataFrame:
     from navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator import PDMSimulator
     from navsim.traffic_agents_policies.log_replay_traffic_agents import LogReplayTrafficAgents
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("Latent WAM ePDMS evaluation requires a CUDA-compatible accelerator")
+    device = resolve_torch_device(require_accelerator=True)
+    _ = torch
 
     scene_filter = load_scene_filter(config.split)
     scene_loader = SceneLoader(
@@ -200,8 +202,9 @@ def evaluate_epdms(config: EpdmsEvaluationConfig) -> pd.DataFrame:
         LatentWAMConfig(vision=VisionConfig(model_id=config.vision_model)) if config.vision_model else LatentWAMConfig()
     )
     agent = LatentWAMAgent(config=model_config, checkpoint_path=str(config.checkpoint_path))
-    agent.initialize()
+    agent.initialize(device=device)
     agent.eval()
+    print(f"Latent WAM ePDMS inference device: {describe_device(device)}")
 
     model_scene_loader = SceneLoader(
         original_sensor_path=config.sensor_path,

@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from navsim.agents.latent_wam.agent import LatentWAMAgent
 from navsim.agents.latent_wam.config import LatentWAMConfig, VisionConfig
 from navsim.agents.latent_wam.dataset import LatentWAMCacheDataset
+from navsim.agents.latent_wam.device import describe_device, pin_memory_enabled, resolve_torch_device, synchronize
 from navsim.agents.latent_wam.sampler import LocalityAwareDistributedSampler
 
 Batch = Tuple[Dict[str, object], Dict[str, torch.Tensor]]
@@ -142,8 +143,7 @@ def summarize_seconds(values: Sequence[float]) -> Dict[str, float]:
 
 
 def _synchronize() -> None:
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    synchronize()
 
 
 def _next_timed(iterator: Iterator[Batch]) -> Tuple[Batch, float]:
@@ -170,7 +170,7 @@ def _build_loader(args: argparse.Namespace) -> DataLoader[Batch]:
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "shuffle": False,
-        "pin_memory": torch.cuda.is_available(),
+        "pin_memory": pin_memory_enabled(),
     }
     if args.sampler_mode == "locality":
         parameters["sampler"] = LocalityAwareDistributedSampler(
@@ -192,21 +192,24 @@ def _build_agent(
 ) -> Tuple[LatentWAMAgent, nn.Module, torch.optim.Optimizer]:
     if args.vision_model is None:
         raise ValueError("train mode requires --vision-model")
-    if not torch.cuda.is_available():
-        raise RuntimeError("train mode requires a CUDA-compatible accelerator")
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    torch.cuda.set_device(local_rank)
-    device = torch.device("cuda", local_rank)
+    device = resolve_torch_device(require_accelerator=True, local_rank=local_rank)
+    if device.type == "cuda":
+        torch.cuda.set_device(local_rank)
+    if device.type == "mps" and args.precision != "fp32":
+        raise RuntimeError("Apple MPS training smoke requires --precision fp32")
     config = LatentWAMConfig(vision=VisionConfig(model_id=str(args.vision_model)))
     agent = LatentWAMAgent(
         config=config,
         checkpoint_path=str(args.checkpoint) if args.checkpoint is not None else None,
         build_target_encoder=True,
     )
-    agent.initialize()
+    agent.initialize(device=device)
     agent.to(device).train()
     training_module: nn.Module = _TrainingStepModule(agent).to(device)
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        if device.type != "cuda":
+            raise RuntimeError("DistributedDataParallel train mode requires CUDA")
         training_module = torch.nn.parallel.DistributedDataParallel(
             training_module,
             device_ids=[local_rank],
@@ -341,7 +344,7 @@ def _run(args: argparse.Namespace) -> Dict[str, object]:
             "python": platform.python_version(),
             "torch": torch.__version__,
             "device_count": torch.cuda.device_count(),
-            "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+            "device": describe_device(),
             "world_size": int(os.environ.get("WORLD_SIZE", "1")),
             "rank": int(os.environ.get("RANK", "0")),
         },

@@ -33,6 +33,7 @@ from navsim.agents.latent_wam.distributed_cache import (
     build_frame_cache_plan,
     plan_shard_ids,
 )
+from navsim.agents.latent_wam.device import resolve_torch_device
 from navsim.agents.latent_wam.features import CAMERA_NAMES, CURRENT_FRAME_INDEX, TRAINING_FRAME_INDICES
 from navsim.agents.latent_wam.geometry import WorldMirrorFeatureExtractor, WorldMirrorInputs
 from navsim.agents.latent_wam.preprocessing import (
@@ -324,7 +325,11 @@ def _run_cache(cfg: DictConfig, context: DistributedCacheContext) -> None:
             extractor = WorldMirrorFeatureExtractor.from_pretrained(
                 config.geometry,
                 config.vision,
-                device=torch.device("cuda", context.local_rank) if context.cuda_available else torch.device("cpu"),
+                device=(
+                    torch.device("cuda", context.local_rank)
+                    if context.cuda_available
+                    else resolve_torch_device()
+                ),
             )
         except Exception as error:
             failures.append(f"rank {context.rank} failed to initialize WorldMirror: {type(error).__name__}: {error}")
