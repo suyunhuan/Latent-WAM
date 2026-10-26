@@ -2,8 +2,12 @@
 """Strictly load released weights and run a one-sample trajectory smoke test."""
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# Before torch import: Apple MPS lacks bicubic upsample used by DINOv2.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import torch
 from safetensors.torch import load_file
@@ -20,8 +24,16 @@ from navsim.agents.latent_wam.model import LatentWAMModel  # noqa: E402
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("weights", type=Path)
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="auto|cuda|mps|cpu (default: LATENT_WAM_DEVICE or auto).",
+    )
     args = parser.parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    from navsim.agents.latent_wam.device import describe_device, resolve_torch_device
+
+    device = resolve_torch_device(args.device)
+    print(f"validate device: {describe_device(device)}")
     vision_encoder = Dinov2Model(
         Dinov2Config(
             hidden_size=768,

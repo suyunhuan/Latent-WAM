@@ -148,6 +148,10 @@ def test_initialize_preserves_default_inference_placement_and_can_force_cpu(tmp_
     move = Mock(return_value=target)
     monkeypatch.setattr(target, "to", move)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        "navsim.agents.latent_wam.device.mps_is_available",
+        lambda: False,
+    )
     if placement is None:
         target.initialize()
     else:

@@ -168,17 +168,17 @@ def infer_trajectories_batched(
         raise ValueError("inference_batch_size must be positive")
     if not tokens:
         raise ValueError("tokens must not be empty")
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "Latent WAM ePDMS evaluation requires a CUDA-compatible accelerator"
-        )
+    from navsim.agents.latent_wam.device import describe_device, resolve_torch_device
+
+    device = resolve_torch_device(require_accelerator=True)
+    print(f"batched inference device: {describe_device(device)}")
 
     scene_filter = load_scene_filter(config.split)
     model_config = _latent_wam_model_config(config)
     agent = LatentWAMAgent(
         config=model_config, checkpoint_path=str(config.checkpoint_path)
     )
-    agent.initialize()
+    agent.initialize(device=device)
     agent.eval()
     model_scene_loader = SceneLoader(
         original_sensor_path=config.sensor_path,

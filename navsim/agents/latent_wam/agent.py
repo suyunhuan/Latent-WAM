@@ -81,7 +81,11 @@ class LatentWAMAgent(AbstractAgent):
                 "checkpoint is incompatible with Latent WAM: "
                 f"missing={missing_keys}, unexpected={incompatible.unexpected_keys}"
             )
-        self.to(device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        if device is None:
+            from navsim.agents.latent_wam.device import resolve_torch_device
+
+            device = resolve_torch_device()
+        self.to(device)
 
     def forward(self, features: Mapping[str, torch.Tensor]) -> TrajectoryPrediction:
         """Predict trajectories from current-frame features.
